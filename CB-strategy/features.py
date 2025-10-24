@@ -3,6 +3,7 @@
 """
 import numpy as np
 import pandas as pd
+import akshare as ak
 # from datetime import timedelta
 
 COL_MAP = {
@@ -71,9 +72,14 @@ def add_label(df: pd.DataFrame, hold_days: int = 5) -> pd.DataFrame:
     return df
 """
 
-def add_label(df: pd.DataFrame, hold_days: int = 5) -> pd.DataFrame:
+def add_label(df: pd.DataFrame, hold_days: int = 1) -> pd.DataFrame:
     df = df.sort_values(["bond_code", "trade_date"])
+    # 用溢价率变化当 label
+    # df["future_premium"] = df.groupby("bond_code")["premium"].shift(-hold_days)
+    # df["label"] = df["future_premium"] - df["premium"]   # 负值=溢价收敛，利好转债
     df["future_price"] = df.groupby("bond_code")["price"].shift(-hold_days)
+    print("shift 后样本:")
+    print(df[['bond_code', 'trade_date', 'price', 'future_price']].head(10))
     df["label"] = df["future_price"] / df["price"] - 1
     df = df.dropna(subset=["label"])
     return df
