@@ -1,8 +1,8 @@
 import pandas as pd
 import numpy as np
 import statsmodels.api as sm
-import matplotlib.pyplot as plt
 import akshare as ak
+import matplotlib.pyplot as plt
 
 # 模拟 BigQuant 的上下文和数据结构
 class Context:
@@ -18,7 +18,7 @@ class Context:
         self.benchmark_price_yesterday = benchmark_data['close'].iloc[0]
         self.current_position = None  # 当前持仓状态，None 表示未持仓，1 表示持有 symbol_1，2 表示持有 symbol_2
 
-    def _order_target_percent(self, symbol, percent):
+    def _order_target_percent(self, symbol, percent, today):
         print(f"Order target percent for {symbol}: {percent}")
         
         # 获取当前持仓数量和总价值
@@ -29,7 +29,7 @@ class Context:
         target_value = total_value * percent
         
         # 获取当前价格
-        current_price = self.data[(self.data['date'] == self.data['date'].max()) & (self.data['instrument'] == symbol)]['close'].values[0]
+        current_price = self.data[(self.data['date'] == today) & (self.data['instrument'] == symbol)]['close'].values[0]
         
         # 计算目标持仓数量
         target_amount = target_value / current_price
@@ -76,17 +76,35 @@ def initialize(context):
     # 模拟设置交易手续费
     print("Setting commission: buy_cost=0.0003, sell_cost=0.0013, min_cost=5")
     
+    # 初始化交易日志数据框
+    context.trading_log = pd.DataFrame(columns=['date', 'zscore', 'position_1', 'position_2', 'action'])
+
+    # 获取股票列表
     stocklist = context.instruments
-    
+    # 从 context.data 中提取股票价格数据
     prices_df = pd.pivot_table(context.data, values='close', index=['date'], columns=['instrument'])
     prices_df = prices_df.ffill()  # 替换 fillna 为 ffill
     context.x = prices_df[stocklist[0]]  # 股票1
     context.y = prices_df[stocklist[1]]  # 股票2
+    # 检查并清理数据
+    context.y = context.y.replace([np.inf, -np.inf], np.nan).dropna()
+    context.x = context.x.replace([np.inf, -np.inf], np.nan).dropna()
+   
+    # 对齐索引
+    context.y, context.x = context.y.align(context.x, join='inner', axis=0)
+
+# 设置止损点
+stop_loss = -0.20 # 10%的回撤
+buffer_period = 20 # 设置20个交易日的缓冲期
 
 # 每个交易日的处理函数
 def handle_data(context, data_obj):
     # 线性回归两个股票的股价 y = ax + b
     X = sm.add_constant(context.x)  # 添加常数项
+    # 转换为数值类型
+    context.y = context.y.astype(float) 
+    X = X.astype(float)
+    # 进行回归分析
     model = sm.OLS(context.y, X).fit()
     
     def zscore(series):
@@ -118,19 +136,14 @@ def handle_data(context, data_obj):
     # 打印调试信息
     print(f"{today} zscore: {zscore_today}, position 1: {cur_position_1}, position 2: {cur_position_2}")
     
-    # 交易逻辑
-    if zscore_today > 1 and context.current_position != 1 and data_obj.can_trade(symbol_1) and data_obj.can_trade(symbol_2):
-        context.order_target_percent(symbol_2, 0)
-        context.order_target_percent(symbol_1, 1)
-        print(f"{today} 全仓买入：{stocklist[1]}，卖出全部：{stocklist[0]}")
-        context.current_position = 1  # 更新当前持仓状态
-    elif zscore_today < -1 and context.current_position != 2 and data_obj.can_trade(symbol_1) and data_obj.can_trade(symbol_2):
-        context.order_target_percent(symbol_1, 0)
-        context.order_target_percent(symbol_2, 1)
-        print(f"{today} 全仓买入：{stocklist[0]}，卖出全部：{stocklist[1]}")
-        context.current_position = 2  # 更新当前持仓状态
-    else:
-        print(f"{today} 无交易操作，当前持仓状态：{context.current_position}")
+     # 将交易日志写入文件
+    log_entry = {
+        'date': today,
+        'zscore': zscore_today,
+        'position_1': cur_position_1,
+        'position_2': cur_position_2,
+        'action': 'No action'
+    }
 
     # 计算当日收益
     current_value = context.portfolio.cash
@@ -157,50 +170,111 @@ def handle_data(context, data_obj):
             context.benchmark_returns.append(0)  # 初始基准收益为0
     context.benchmark_price_yesterday = benchmark_price_today.values[0] if not benchmark_price_today.empty else context.benchmark_price_yesterday
 
+    # 计算累计收益率
+    cumulative_returns = (1 + pd.Series(context.returns)).cumprod() - 1
+    roll_max = cumulative_returns.cummax()
+    daily_drawdown = cumulative_returns / roll_max - 1.0
+    max_drawdown = daily_drawdown.min()
+
+    # 检查是否达到止损点
+    if len(context.returns) > buffer_period and max_drawdown <= stop_loss:
+        print(f"Stop loss triggered at {today}, max drawdown: {max_drawdown:.2%}")
+        # 平仓操作
+        context.order_target_percent(symbol_1, 0, today)
+        context.order_target_percent(symbol_2, 0, today)
+        context.current_position = None
+        log_entry['action'] = 'Stop loss triggered'
+        log_entry['position_1'] = 0
+        log_entry['position_2'] = 0
+    
+    else:
+        # 交易逻辑
+        if zscore_today > 0.5 and context.current_position != 1 and data_obj.can_trade(symbol_1) and data_obj.can_trade(symbol_2):
+            context.order_target_percent(symbol_2, 0, today) # 传递today参数
+            context.order_target_percent(symbol_1, 1, today) # 传递today参数
+            print(f"{today} 全仓买入：{stocklist[1]}，卖出全部：{stocklist[0]}")
+            context.current_position = 1  # 更新当前持仓状态
+            log_entry['action'] = f'Buy {stocklist[1]}, Sell {stocklist[0]}'
+        elif zscore_today < -0.5 and context.current_position != 2 and data_obj.can_trade(symbol_1) and data_obj.can_trade(symbol_2):
+            context.order_target_percent(symbol_1, 0, today) # 传递today参数
+            context.order_target_percent(symbol_2, 1, today) # 传递today参数
+            print(f"{today} 全仓买入：{stocklist[0]}，卖出全部：{stocklist[1]}")
+            context.current_position = 2  # 更新当前持仓状态
+            log_entry['action'] = f'Buy {stocklist[0]}, Sell {stocklist[1]}'
+        else:
+            print(f"{today} 无交易操作，当前持仓状态：{context.current_position}")
+            log_entry['action'] = 'No action'
+    
+    # 将日志条目追加到交易日志数据框
+    log_entry_df = pd.DataFrame([log_entry])
+    if not hasattr(context, 'trading_log'):
+        context.trading_log = log_entry_df
+    else:
+        context.trading_log = pd.concat([context.trading_log, log_entry_df], ignore_index=True)
+ 
+
+    # 保存到 CSV 文件
+    context.trading_log.to_csv('tradingdiary.csv', index=False)
+
 # 模拟主函数
 def main():
-    # 获取股票和沪深300指数的历史数据
-    stock1 = "601328"  # 交通银行
-    stock2 = "601998"  # 中信证券
-    start_date = "20240602"  # 调整起始日期为 2024-01-02
-    end_date = "20241230"
-
-    stock1_data = ak.stock_zh_a_hist(symbol=stock1, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-    stock2_data = ak.stock_zh_a_hist(symbol=stock2, period="daily", start_date=start_date, end_date=end_date, adjust="qfq")
-    benchmark_data = ak.stock_zh_index_daily_em(symbol="sh000300", start_date=start_date, end_date=end_date)
-
-    # 检查数据格式
-    print("Stock1 Data Head:", stock1_data)
-    print("Stock2 Data Head:", stock2_data)
-    print("Benchmark Data Head:", benchmark_data.head())
-
+    # 从文件路径加载股票数据
+    stock1_path = r"C:\Users\hz\Desktop\test\002978.xlsx"
+    stock2_path = r"C:\Users\hz\Desktop\test\600459.xlsx"
+    
+    stock1_data = pd.read_excel(stock1_path)
+    stock2_data = pd.read_excel(stock2_path)
+    
     # 修正列名
     stock1_data.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
     stock2_data.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
-    benchmark_data.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
-
+    
     # 确保日期列是 datetime 类型
     stock1_data['date'] = pd.to_datetime(stock1_data['date'])
     stock2_data['date'] = pd.to_datetime(stock2_data['date'])
-    benchmark_data['date'] = pd.to_datetime(benchmark_data['date'])
-
-    # 合并数据并添加 instrument 列
-    stock1_data['instrument'] = stock1  # 添加 instrument 列，值为股票代码
-    stock2_data['instrument'] = stock2  # 添加 instrument 列，值为股票代码
-
+    
+    # 添加 instrument 列
+    stock1_data['instrument'] = "301488"
+    stock2_data['instrument'] = "300745"
+    
     # 合并数据
     data = pd.concat([stock1_data, stock2_data])
-    instruments = [stock1, stock2]
-
+    
+    # 获取基准数据
+    benchmark_data = ak.stock_zh_index_daily_em(symbol="sh000300", start_date="20221230", end_date="20241231")
+    benchmark_data.rename(columns={'日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume'}, inplace=True)
+    benchmark_data['date'] = pd.to_datetime(benchmark_data['date'])
+    
+    
+    # 初始化上下文
+    instruments = ["301488", "300745"]
     context = Context(instruments, data, benchmark_data)
     initialize(context)
-
+    
     # 获取实际交易日
-    trading_dates = context.data['date'].unique()
+    trading_dates = data['date'].unique()
+    trading_dates = pd.Series(trading_dates).sort_values()
+    
+    # 确保基准数据的日期范围与交易日的日期范围一致
+    benchmark_dates = benchmark_data['date'].unique()
+    benchmark_dates = pd.Series(benchmark_dates).sort_values()
+    
+    print("Benchmark Dates:", benchmark_dates)
+    print("Length of Benchmark Dates:", len(benchmark_dates))
+    
+    if len(benchmark_dates) < len(trading_dates):
+        print("Warning: Benchmark data has fewer dates than trading dates.")
+        trading_dates = trading_dates[trading_dates.isin(benchmark_dates)]
+        print("Updated Trading Dates:", trading_dates)
+        print("Updated Length of Trading Dates:", len(trading_dates))
+    
+
     for date in trading_dates:
         data_obj = Data(date)
         handle_data(context, data_obj)
+    
 
+    
     # 计算收益表现
     returns = pd.Series(context.returns)
     cumulative_returns = (1 + returns).cumprod() - 1
@@ -215,7 +289,18 @@ def main():
     profit_loss_ratio = returns[returns > 0].mean() / abs(returns[returns < 0].mean())
     volatility = returns.std() * np.sqrt(252)
     information_ratio = (returns.mean() - benchmark_returns.mean()) / returns.std() * np.sqrt(252)
-    max_drawdown = (cumulative_returns / cumulative_returns.cummax() - 1).min()
+    # 计算最大回撤
+    roll_max = cumulative_returns.cummax()
+    daily_drawdown = (cumulative_returns - roll_max) / roll_max
+    max_drawdown = daily_drawdown.min()
+    # max_drawdown = (cumulative_returns / cumulative_returns.cummax().replace(0, np.nan) - 1).min()
+
+
+
+    # 检查是否有负值或异常值
+    if (cumulative_returns < 0).any():
+        print("Warning: Negative cumulative returns detected.")
+        print(cumulative_returns[cumulative_returns < 0])
 
     # 打印收益表现
     print(f"累计收益率: {cumulative_returns.iloc[-1]:.2%}")
@@ -231,8 +316,6 @@ def main():
     print(f"最大回撤: {max_drawdown:.2%}")
 
     # 绘制累计收益率图像
-    # 绘制累计收益率图像
-    # 创建一个 2 行 1 列的子图布局
     fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
 
     # 第一个子图：累计收益和基准收益
@@ -244,7 +327,6 @@ def main():
     ax1.legend()
 
     # 第二个子图：两只股票的收盘价走势
-    # 确保股票收盘价数据与 trading_dates 对齐
     stock1_close = stock1_data.set_index('date').reindex(trading_dates).reset_index()['close']
     stock2_close = stock2_data.set_index('date').reindex(trading_dates).reset_index()['close']
 
@@ -254,6 +336,7 @@ def main():
     ax2.set_xlabel('Time')
     ax2.set_ylabel('Close Price')
     ax2.legend()
+
 
     # 自动格式化 x 轴的时间标签，使其更易读
     fig.autofmt_xdate()
