@@ -21,6 +21,11 @@ def download_data(start: str = "20230104", end: str = "20231229") -> pd.DataFram
         try:
             df = ak.bond_cb_jsl(d)
             if df is not None and not df.empty:
+                CODE_MAP = {"代码": "bond_code"}
+                df = df.rename(columns=CODE_MAP)
+                if "bond_code" not in df.columns:
+                    print(df.columns)          # 打印一次，方便调试
+                    raise ValueError("bond_cb_jsl 返回表缺少债券代码列，请检查字段映射")
                 df["trade_date"] = pd.to_datetime(d)
                 res.append(df)
             else:
@@ -35,26 +40,32 @@ def download_data(start: str = "20230104", end: str = "20231229") -> pd.DataFram
     return df_all
 
 def fetch_real_history(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    用 ak.bond_zh_hs_cov_daily 拉单券历史，确保 price ≠ 未来价
-    """
+    if "bond_code" not in df.columns:
+        raise KeyError(f"缺少 bond_code 列，当前列名：{list(df.columns)}")
+    def add_prefix(code: str) -> str:
+        return ("sh" if code.startswith("11") else "sz") + code #前缀转换
+
     out = []
     for code in tqdm(df["bond_code"].unique(), desc="akshare 历史行情"):
+        symbol = add_prefix(code)
         try:
-            sub = ak.bond_zh_hs_cov_daily(symbol=code)
-            if sub is not None and not sub.empty:
-                sub = sub[["trade_date", "close"]].rename(columns={"close": "price"})
-                sub["bond_code"] = code
-                sub["trade_date"] = pd.to_datetime(sub["trade_date"])
-                out.append(sub)
+            sub = ak.bond_zh_hs_cov_daily(symbol=symbol)
+            if sub is None or sub.empty:
+                print(f"{symbol} 返回空表，跳过")
+                continue
+            sub = sub[["date", "close"]].rename(columns={"date": "trade_date", "close": "close_price"})
+            sub["bond_code"] = code
+            sub["trade_date"] = pd.to_datetime(sub["trade_date"])
+            out.append(sub)
         except Exception as e:
-            print(code, e)
+            print(f"{symbol} 异常：{e}")
             continue
-    if not out:
-        raise RuntimeError("akshare 历史行情拉取失败")
+
+    if not out:                       # 真 · 一条都没拉到再抛错
+        raise RuntimeError("所有 symbol 均拉取失败，请检查 akshare 接口或网络")
     real = pd.concat(out, ignore_index=True)
-    # 用真实历史覆盖原 price
-    df = df.drop(columns=["price"]).merge(
-        real, on=["trade_date", "bond_code"], how="left"
-    )
-    return df
+    # 在 fetch_real_history 最终返回时，删除原始 price 列，统一用 close_price
+    return (
+        df.drop(columns=["price", "original_price"], errors="ignore")  # 删除原始价格列
+        .merge(real, on=["trade_date", "bond_code"], how="left")
+)
