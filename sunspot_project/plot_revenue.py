@@ -21,9 +21,11 @@ cols_map = {
     '银河账户余额': 'YH_balance',
     '银河账户盈亏': 'YH_profit_loss',
     '银河总盈亏': 'YH_cum',
+    '银河本金': 'YH_initial_cpt',
     '信达账户余额': 'XD_balance',
     '信达账户盈亏': 'XD_profit_loss',
     '信达总盈亏': 'XD_cum',
+    '信达本金': 'XD_initial_cpt',
     '每日总盈亏': 'stra_profit_loss',
     '策略累计总盈亏': 'stra_cum',
     '沪深300': 'CSI300_close'  
@@ -61,7 +63,7 @@ def calc_indicators(nav_pseries: pd.Series, ann_days: int = 252):
 
 # ========== 新增：计算产品净值 + 沪深300归一化净值 ==========
 # 1. 产品单位净值（初始值=1，累计净值与单位净值一致）；产品净值 = (初始本金 + 累计盈亏) / 初始本金
-initial_capital = 30300000  # 银河1030W 信达2000W
+initial_capital = df['YH_initial_cpt'] + df['XD_initial_cpt'] # 银河1030W 信达2000W[2025.12.25出金500W]
 df['product_unit_nav'] = (initial_capital + df['stra_cum']) / initial_capital
 
 # 用产品单位净值算指标
@@ -88,7 +90,7 @@ ax2 = fig.add_subplot(gs[1, 0])    # 副图（第2行）
 
 # 4.1 主图：产品单位净值 + 沪深300基准
 # 绘制产品单位净值
-ax1.plot(df[date_col], df['product_unit_nav'], color='royalblue', lw=2, label='策略')
+ax1.plot(df[date_col], df['product_unit_nav'], color='royalblue', lw=2, linestyle='--', label='策略')
 # 绘制沪深300归一化净值
 ax1.plot(df[date_col], df['CSI300_nav'], color='red', lw=2, linestyle='--', label='沪深300')
 
@@ -148,7 +150,7 @@ profit_text = (
     f"银河总盈亏：{last10['YH_cum'].iloc[-1]:.2f}元\n"
     f"信达总盈亏：{last10['XD_cum'].iloc[-1]:.2f}元"
 )
-fig.text(0.85, 0.4, profit_text, ha='left', va='center', 
+fig.text(0.13, 0.02, profit_text, ha='left', va='bottom', 
          fontsize=11, bbox=dict(boxstyle='round,pad=0.8', facecolor='white', edgecolor='gray', alpha=0.8))
 
 plt.subplots_adjust(hspace=0.3, bottom=0.1)
