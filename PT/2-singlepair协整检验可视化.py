@@ -6,8 +6,8 @@ from statsmodels.tsa.stattools import adfuller, coint
 import matplotlib.pyplot as plt
 
 # 定义股票代码
-stock1 = "002978"  # 丰乐种业
-stock2 = "600459"  # 万向德龙
+stock1 = "601398"  # 丰乐种业
+stock2 = "601077"  # 万向德龙
 
 # 定义获取数据的时间范围
 start_date = "20230101"  # 起始日期
