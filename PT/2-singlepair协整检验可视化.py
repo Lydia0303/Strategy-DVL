@@ -6,11 +6,11 @@ from statsmodels.tsa.stattools import adfuller, coint
 import matplotlib.pyplot as plt
 
 # 定义股票代码
-stock1 = "601398"  # 丰乐种业
-stock2 = "601077"  # 万向德龙
+stock1 = "601939"  # 
+stock2 = "601077"  # 
 
 # 定义获取数据的时间范围
-start_date = "20230101"  # 起始日期
+start_date = "20210101"  # 起始日期
 end_date = "20241231"    # 结束日期
 
 # 获取股票1的历史数据

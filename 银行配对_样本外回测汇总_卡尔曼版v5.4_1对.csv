@@ -1,0 +1,2 @@
+stock1,stock2,initial_capital,final_value,total_return,num_trades,win_rate,profit_loss_ratio,sharpe_ratio,coint_check_count,cooldown_count,floating_stop_loss_count,base_update_count,pair_invalid_date,days_after_invalid,pair_status,hedge_ratio
+000532,600830,1000000,999933.1871850004,-0.00668128149996046,112,0.4732142857142857,0.012046863160001467,-0.1805154599471574,14,112,0,235,,0,有效,0.14706779785177107
