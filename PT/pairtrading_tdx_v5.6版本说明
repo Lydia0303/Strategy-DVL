@@ -1,0 +1,53 @@
+是按行业板块文件中的原始顺序，取前两只数据有效的股票直接回测，去掉了样本内筛选股票对的逻辑（SSD、协整检验）
+
+主要改进点说明
+1. 交易机制改为A股适配的单腿轮动
+# 原v5.5：双腿多空（需要融券）
+shares1 = 100  # 做多
+shares2 = int(shares1 * hedge_ratio)  # 做空
+
+# 改进版：单腿轮动（只做多）
+if z_score > entry_threshold:    # 买入stock2
+    execute_buy(stock2)
+elif z_score < -entry_threshold: # 买入stock1  
+    execute_buy(stock1)
+
+# 轮动逻辑：卖出当前持仓，买入另一只
+if holding_stock2 and z_score < -rebalance_threshold:
+    sell(stock2)
+    buy(stock1)  # 轮动到stock1
+
+2. 智能仓位管理（替代固定100股）
+def calculate_position_size(self, price, target_ratio=None):
+    """根据可用资金动态计算股数"""
+    available_capital = self.cash * target_ratio  # 默认max_position_ratio=0.6
+    max_amount = available_capital / (1 + commission + tax)
+    shares = int(max_amount / price / 100) * 100  # 100股整数倍
+    return shares
+
+3. 短冷却期优化
+原v5.5：基础5天+动态延长（最长50天），导致冷却触发17-18次，实际交易时间仅80天
+改进版：基础2天+缓慢延长（最长10天），保持交易连续性
+
+4. 完整的可视化输出
+图1：净值曲线 + 买卖点标记
+图2：Z-Score走势 + 交易区间（黄色背景标记持仓期）
+图3：卡尔曼对冲比率动态变化
+表格1：详细交易日志（含手续费、盈亏、持仓天数）
+表格2：每日净值（含日收益率、累计收益）
+
+5. 参数优化建议值
+| 参数                   | 原v5.5     | 改进版          | 理由       |
+| -------------------- | --------- | ------------ | -------- |
+| `entry_threshold`    | 1.2       | **1.2**      | 保持不变     |
+| `exit_threshold`     | 0.36 (相对) | **0.4** (绝对) | 及时止盈     |
+| `cooling_period`     | 5         | **2**        | 短冷却，提高频率 |
+| `max_cooldown`       | 50        | **10**       | 避免长期闲置   |
+| `max_position_ratio` | 0.5       | **0.6**      | 提高资金效率   |
+| `max_holding_days`   | -         | **15**       | 新增时间止损   |
+
+运行后将生成：
+backtest_股票代码1_股票代码2.png - 回测可视化图表
+trades_股票代码1_股票代码2.csv - 详细交易记录
+daily_nav_股票代码1_股票代码2.csv - 每日净值数据
+summary_results.csv - 汇总结果表

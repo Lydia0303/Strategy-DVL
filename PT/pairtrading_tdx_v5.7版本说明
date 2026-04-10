@@ -1,0 +1,349 @@
+┌─────────────────────────────────────────────────────────────┐
+│                     v5.7 融合版架构                          │
+├─────────────────────────────────────────────────────────────┤
+│  样本内阶段（严格遵循v5.5）                                   │
+│  ├─ 计算所有配对SSD距离                                       │
+│  ├─ 按SSD排序取前3×N对                                       │
+│  ├─ 严格协整检验（ADF, p<0.05）                              │
+│  ├─ OLS估计对冲比率γ和截距μ                                  │
+│  └─ 输出TOP_N筛选结果                                       │
+├─────────────────────────────────────────────────────────────┤
+│  样本外阶段（v5.6风格 + 批量管理）                            │
+│  ├─ 对每个筛选配对初始化卡尔曼滤波                            │
+│  ├─ 单腿轮动交易（A股适配）                                   │
+│  ├─ 动态协整监控（30天频率）                                  │
+│  ├─ 多重风控（止损+时间止损+轮动）                            │
+│  └─ 生成独立可视化图表                                        │
+├─────────────────────────────────────────────────────────────┤
+│  汇总阶段（新增）                                             │
+│  ├─ 多配对对比图表（6维度对比）                               │
+│  ├─ CSV汇总报告                                              │
+│  └─ 交易日志和净值序列导出                                    │
+└─────────────────────────────────────────────────────────────┘
+
+关键改进点
+1. 样本内筛选（select_pairs_v5_5_style）
+样本内筛选（SSD排名前3*N的股票对，进行协整检验）：
+# 第一阶段：SSD快速筛选
+pair_scores = []
+for s1, s2 in combinations(stock_list, 2):
+    # 严格时间对齐（500天历史，100天样本内）
+    # 计算SSD距离和相关性
+    pair_scores.append((s1, s2, ssd, corr, sample_index))
+
+# 按SSD排序取前3×N
+pair_scores.sort(key=lambda x: x[2])
+top_pairs = pair_scores[:top_n*3]
+
+# 第二阶段：严格协整检验
+for s1, s2 in top_pairs:
+    # OLS估计对冲比率
+    model = sm.OLS(log_s1, sm.add_constant(log_s2)).fit()
+    residual = log_s1 - (intercept + hedge_ratio * log_s2)
+    
+    # 严格标准：ADF检验 p < 0.05
+    if adf_test(residual) < 0.05:
+        selection_results.append({...})
+
+2. 批量回测框架（run_batch_backtest）
+def run_batch_backtest(selected_pairs, ...):
+    all_results = []
+    
+    for idx, pair_info in enumerate(selected_pairs):
+        # 为每对创建独立策略实例
+        strategy = ASharePairsTradingKalmanV5_7(**params)
+        
+        # 执行回测
+        report = strategy.run_backtest(...)
+        
+        # 生成独立可视化
+        strategy.plot_results(save_path=f"backtest_{stock1}_{stock2}.png")
+        
+        # 导出交易日志
+        strategy.export_trade_log(f"trades_{stock1}_{stock2}.csv")
+        
+        all_results.append(report)
+    
+    # 生成汇总对比图
+    generate_summary_report(all_results)
+
+3. 多配对对比可视化（新增）
+生成6维度对比图：
+收益率对比（绿色正收益/红色负收益）
+夏普比率对比
+胜率对比
+交易次数对比
+最大回撤对比
+样本内R² vs 样本外收益（检验过拟合）
+
+| 特性        | v5.5         | v5.6         | **v5.7（融合版）**    |
+| --------- | ------------ | ------------ | ---------------- |
+| **样本内筛选** | ✅ SSD+协整（严谨） | ❌ 无（直接取前2只）  | ✅ **严格复刻v5.5**   |
+| **交易模式**  | ✅ 多空对冲       | ✅ 单腿轮动（A股适配） | ✅ **单腿轮动（A股适配）** |
+| **批量回测**  | ✅ 支持多配对      | ❌ 单配对        | ✅ **支持前N对**      |
+| **可视化**   | ❌ 无          | ✅ 完整图表       | ✅ **完整图表+多配对对比** |
+| **成本模型**  | ❌ 简化         | ✅ 印花税+最低佣金   | ✅ **完整成本模型**     |
+| **数值稳定性** | ⚠️ 一般        | ✅ 修复零值保护     | ✅ **修复零值保护**     |
+
+4. 使用方法：
+# 配置参数
+TOP_N_PAIRS = 5  # 回测前5对
+
+PARAMS = {
+    'entry_threshold': 1.2,
+    'exit_threshold': 0.3,
+    'stop_loss': 2.5,
+    'max_holding_days': 15,
+    'rebalance_threshold': 0.6,
+    'coint_check_freq': 30,  # 动态协整检验频率
+    ...
+}
+
+# 执行流程
+1. 样本内筛选：从行业成分股中筛选TOP_N配对
+2. 批量回测：对每对生成独立图表和CSV
+3. 汇总报告：多配对对比图和汇总CSV
+
+# 输出文件：
+backtest_{s1}_{s2}.png - 单配对详细图表（净值+Z-Score+对冲比率）
+trades_{s1}_{s2}.csv - 交易日志
+daily_nav_{s1}_{s2}.csv - 每日净值
+{行业}_配对对比图_v5.7.png - 6维度对比图
+{行业}_配对回测汇总_v5.7_{N}对.csv - 汇总报告
+
+-------------------------------------------------------------特别注意-----------------------------------------------------------------------
+1. 轮动逻辑：
+1.1 核心思想是：当价差向相反方向运动时，迅速切换到更有利的一方。
+1.2 轮动逻辑原理
+前提条件：假设当前持仓情况和Z-Score状态：
+| 场景      | 当前持仓                 | Z-Score含义              | 轮动触发条件       |
+| ------- | -------------------- | ---------------------- | ------------ |
+| **场景A** | 持有stock2（之前Z>1.2买入）  | Z>0表示stock1高估，stock2低估 | Z<-0.6（反向偏离） |
+| **场景B** | 持有stock1（之前Z<-1.2买入） | Z<0表示stock1低估，stock2高估 | Z>0.6（反向偏离）  |
+1.3 逻辑拆解：
+# 条件判断：是否触发轮动
+elif (self.holding_stock == stock2 and z_score < -self.rebalance_threshold) or \
+     (self.holding_stock == stock1 and z_score > self.rebalance_threshold):
+场景A详解（持有stock2时）：
+初始状态：Z = +1.5 > 1.2 → 买入stock2（认为stock2低估）
+         stock1价格相对偏高，stock2价格相对偏低
+
+轮动触发：Z从+1.5下跌到-0.7 < -0.6（rebalance_threshold）
+         意味着stock2从"低估"变成了"高估"
+         同时stock1从"高估"变成了"低估"
+
+行动：   立即卖出stock2 → 买入stock1
+         捕捉反向的均值回归机会
+场景B详解（持有stock1时）：
+初始状态：Z = -1.5 < -1.2 → 买入stock1（认为stock1低估）
+
+轮动触发：Z从-1.5上涨到+0.7 > +0.6
+
+行动：   立即卖出stock1 → 买入stock2
+
+代码执行环节：
+# 1. 确定轮动目标
+other_stock = stock1 if self.holding_stock == stock2 else stock2
+other_price = price1 if self.holding_stock == stock2 else price2
+
+# 2. 先卖出当前持仓（ realize P&L ）
+self.execute_sell(current_date, self.holding_stock,
+                  current_price,  # 当前持仓股票的市价
+                  f"轮动卖出(Z={z_score:.2f})")
+
+# 3. 立即买入另一方（ 再投资 ）
+success, msg = self.execute_buy(current_date, other_stock, other_price,
+                                f"轮动买入(Z={z_score:.2f})")
+
+# 4. 重置持仓状态（ 如果买入成功 ）
+if success:
+    self.entry_z = z_score      # 记录新的入场Z-Score
+    self.entry_date = current_date  # 重置持仓时间
+    self.holding_days = 0       # 重置时间止损计数器
+
+# 5. 标记当日状态为"rotating"
+self.daily_records.append({
+    'date': current_date,
+    'status': 'rotating',  # 特殊标记，便于分析
+    ...
+})
+
+# 6. continue跳过本次循环剩余逻辑
+#    （因为已经处理过交易，避免重复判断出场条件）
+continue
+
+2. 冷却逻辑：
+2.1 冷却功能的核心目的：冷却期（Cooling Period）是配对交易策略中的风险控制机制，主要解决以下问题：
+| 问题         | 说明               | 冷却的作用    |
+| ---------- | ---------------- | -------- |
+| **过度交易**   | 连续亏损后情绪化频繁交易     | 强制暂停，冷静期 |
+| **假突破陷阱**  | 价格短暂偏离后迅速回归，反复打脸 | 等待趋势明朗   |
+| **协整关系破裂** | 统计套利基础（协整）暂时失效   | 避免在失效期交易 |
+| **流动性冲击**  | 大额交易后市场微观结构变化    | 等待市场恢复   |
+| **参数过拟合**  | 短期噪音导致模型参数漂移     | 让卡尔曼滤波稳定 |
+2.2 v5.7的冷却机制详解
+2.2.1 触发冷却的三种场景：
+# 场景1：协整关系破裂（最严重）
+if not is_coint:  # ADF检验p值>0.1
+    self.consecutive_fails += 1
+    if self.consecutive_fails >= 3:  # 连续3次检验失败
+        # 强制平仓 + 进入冷却
+        self.execute_sell(..., "协整破裂强制平仓")
+        self.cooling_period = True
+        self.cooldown_count += 1
+        cooldown_days = get_dynamic_cooldown(self.cooldown_count, self.max_cooldown, self.base_cooling_period)
+        self.cooling_end_date = current_date + timedelta(days=cooldown_days)
+
+# 场景2：正常出场后（止盈/止损/时间止损）
+if exit_condition:
+    self.execute_sell(..., exit_reason)
+    self.cooling_period = True
+    cooldown_days = get_dynamic_cooldown(self.cooldown_count, self.max_cooldown, self.base_cooling_period)
+    self.cooling_end_date = current_date + timedelta(days=cooldown_days)
+    print(f"    进入{cooldown_days}天冷却期")
+
+2.2.2 动态冷却期计算
+def get_dynamic_cooldown(cooldown_count, max_cooldown=10, base_days=2):
+    """
+    动态冷却期：随失效次数增加而延长
+    公式：冷却天数 = base_days + cooldown_count × 2
+    
+    示例：
+    - 第1次冷却：2 + 0×2 = 2天
+    - 第2次冷却：2 + 1×2 = 4天  
+    - 第3次冷却：2 + 2×2 = 6天
+    - ...
+    - 最大不超过max_cooldown（默认10天）
+    """
+    return min(base_days + cooldown_count * 2, max_cooldown)
+
+2.3 为什么需要动态延长
+第1次冷却：可能只是正常波动 → 短冷却（2天）
+第2次冷却：可能有点问题 → 中等冷却（4天）
+第3次冷却：很可能真的失效了 → 长冷却（6天+）
+...
+第5次冷却：永久剔除该配对
+
+2.4 冷却期间的系统行为
+if self.cooling_period:
+    if current_date >= self.cooling_end_date:
+        # 冷却结束，恢复交易
+        self.cooling_period = False
+        self.pair_valid = True  # 恢复有效状态
+        print(f"  [{current_date}] 冷却期结束，恢复交易")
+    else:
+        # 冷却期内：只记录净值，不交易
+        total_value = self.calculate_portfolio_value(current_date, price1, price2)
+        self.daily_records.append({
+            'date': current_date,
+            'status': 'cooling',  # 标记为冷却状态
+            ...
+        })
+        self.equity_curve.append((current_date, total_value))
+        continue  # 跳过交易逻辑
+
+2.5 冷却机制的可视化
+时间轴示例：
+
+交易日:  1   2   3   4   5   6   7   8   9   10  11  12  13  14  15
+        ├───────┤       ├───────────┤           ├───────┤
+         持仓期   冷却期1    持仓期      冷却期2        持仓期
+
+Z-Score: 
++2.0 ─────────────────────────────────────────────────────────────
+        │       │       │           │           │       │
++1.2 ───┘       │       └───────────┘           └───────┘  入场/出场
+        买入    │       卖出(止损)    买入        卖出(止盈)
+                │
++0.0 ───────────┼──────────────────────────────────────────────────
+                │       ↑
+-0.6 ───────────┘       └── 触发冷却（连续3次协整检验失败）
+
+冷却期状态：
+┌─────────┬─────────┬─────────┬─────────┬─────────┐
+│ 日期    │ 现金状态 │ 持仓状态 │ 交易信号 │ 系统行为 │
+├─────────┼─────────┼─────────┼─────────┼─────────┤
+│ Day 1-3 │ 减少    │ stock2  │ -       │ 正常持仓 │
+│ Day 4-5 │ 100%    │ 空仓    │ Z>1.2   │ 🚫 忽略信号（冷却中）│
+│ Day 6-9 │ 减少    │ stock1  │ -       │ 正常持仓 │
+│ Day 10-13│ 100%   │ 空仓    │ Z<-1.2  │ 🚫 忽略信号（冷却中）│
+│ Day 14-15│ 减少   │ stock2  │ -       │ 正常持仓 │
+└─────────┴─────────┴─────────┴─────────┴─────────┘
+
+2.6 冷却与永久失效的区别
+| 维度       | 冷却（Cooling）     | 永久失效（Invalid） |
+| -------- | --------------- | ------------- |
+| **触发条件** | 单次出场 / 连续3次协整失败 | 连续5次冷却（即累积失效） |
+| **持续时间** | 2-10天（动态）       | 永久            |
+| **恢复可能** | ✅ 可以恢复交易        | ❌ 不可恢复        |
+| **资金处理** | 持有现金或按无风险收益计    | 转投其他配对或无风险资产  |
+| **目的**   | 短期风险控制          | 长期策略淘汰        |
+代码中的递进关系
+# 第1-4次：进入冷却，下次可能恢复
+if self.cooldown_count >= 5:
+    # 第5次：永久失效
+    print(f"    ❌ 配对永久失效")
+    self.pair_valid = False  # 永久标记为无效
+    break  # 跳出回测循环
+
+
+2.7 为什么v5.7特别需要冷却？
+2.7.1 单腿轮动策略的特殊性
+| 特性           | 风险         | 冷却缓解     |
+| ------------ | ---------- | -------- |
+| 始终持仓（轮动不换现金） | 暴露时间更长     | 强制空仓休息   |
+| 双向切换         | 可能在震荡中频繁打脸 | 暂停观察趋势   |
+| A股T+1限制      | 当日买入无法卖出   | 避免连续冲动交易 |
+
+2.7.2 卡尔曼滤波的特性
+# 卡尔曼滤波在以下情况需要冷却来稳定：
+# 1. 参数快速漂移时
+self.kf.update(log_s1.iloc[i], log_s2.iloc[i])  # 每点更新
+
+# 2. 观测噪声突然增大时（市场剧烈波动）
+# 冷却让滤波器有更多数据点来平滑参数
+
+2.7.3 与v5.5版本对比
+| 场景    | v5.5（多空对冲） | v5.7（单腿轮动）              |
+| ----- | ---------- | -------------- |
+| 出场后状态 | 多空平仓，现金    | 卖出后**立即买入**另一方    |
+| 冷却必要性 | 中等（有现金缓冲期） | **极高**（避免连续轮动） |
+| 冷却触发  | 主要协整破裂     | **每次出场都触发**          |
+| 冷却期操作 | 无风险收益      | 纯现金等待                  |
+            而 v5.7每次出场都触发冷却的关键原因：
+# v5.5多空对冲出场后：
+现金 = 多头市值 + 空头市值返还
+行为 = 等待下一次入场信号（自然有间隔）
+
+# v5.7单腿轮动出场后：
+如果不冷却 → 立即检查Z-Score → 可能立即再入场
+           → 在震荡市造成"卖出→买入→卖出"的日内循环
+           → 交易成本爆炸
+
+冷却机制 → 强制空仓2-10天 → 等待明确的趋势
+         → 避免过度交易 → 保护本金
+
+2.7.4 冷却参数调优建议
+PARAMS = {
+    'cooling_period': 2,      # 基础冷却天数（第1次）
+    'max_cooldown': 10,       # 最大冷却天数上限
+    'coint_check_freq': 30,   # 协整检验频率（交易日）
+    # 动态公式：冷却天数 = 2 + 失败次数 × 2
+}
+
+# 不同市场环境的建议：
+
+市场环境        │ 建议base_days │ 建议max_cooldown │ 理由
+────────────────┼───────────────┼──────────────────┼─────────────────
+震荡市(高波动)  │ 3-5           │ 15-20           │ 需要更长冷静期
+趋势市(低波动)  │ 1-2           │ 5-8             │ 快速捕捉机会
+熊市(恐慌情绪)  │ 5-7           │ 20-30           │ 极度保守，避免抄底
+牛市(乐观情绪)  │ 1             │ 3-5             │ 积极参与，但防过热
+
+总结
+冷却功能是v5.7的风险控制核心，它：
+防止过度交易：每次出场后强制休息，避免情绪化操作
+保护本金：在协整关系可疑时及时止损观望
+动态适应：根据历史失败次数智能调整冷却长度
+策略保鲜：永久剔除持续失效的配对，保持策略池质量
+一句话理解：冷却就是给策略装了一个"熔断器"，在连续受挫时自动断电保护，防止情绪化和统计套利基础丧失时的盲目交易。

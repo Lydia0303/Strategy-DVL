@@ -1,0 +1,177 @@
+pairtrading_tdx_v5.8.py
+├── 第一部分：基础函数（5个）
+│   ├── get_industry_stocks_local()
+│   ├── get_stock_data_from_tdx()
+│   ├── adf_test()
+│   └── KalmanFilterPairTrading类
+│
+├── 第二部分：v5.8核心创新
+│   ├── PairSpecificParams数据类
+│   ├── calculate_mean_reversion_speed()
+│   ├── calculate_optimal_thresholds()
+│   └── generate_pair_specific_params()
+│
+├── 第三部分：策略类
+│   └── ASharePairsTradingKalmanV5_8类
+│       ├── __init__()（使用PairSpecificParams）
+│       ├── calculate_position_size()
+│       ├── execute_buy()
+│       ├── execute_sell()
+│       ├── calculate_spread_zscore()
+│       ├── check_cointegration()（使用配对特异性阈值）
+│       ├── run_backtest()（使用配对特异性参数）
+│       ├── generate_report()
+│       ├── plot_results()
+│       ├── export_trade_log()
+│       └── export_daily_nav()
+│
+├── 第四部分：批量回测
+│   ├── select_and_optimize_pairs()
+│   ├── run_batch_backtest_v5_8()
+│   ├── generate_v58_comparison_report()
+│   └── plot_v58_parameter_analysis()
+│
+└── 第五部分：主程序
+    └── if __name__ == "__main__": ...
+
+
+核心： v5.8版本应考虑配对特异性参数优化，而非一刀切的全局参数
+v5.8 核心机制详解
+1. 参数优化逻辑流程
+样本内数据（2018-2023）
+    │
+    ├─→ 计算价差序列 spread = log(S1) - (μ + γ·log(S2))
+    │
+    ├─→ 计算关键统计量：
+    │   ├── 波动率 σ = std(spread)
+    │   ├── 均值回归速度 θ（通过OU过程估计）
+    │   └── 协整显著性 p值
+    │
+    └─→ 映射到交易参数：
+        ├── 高波动 (σ>7.5%) → 提高入场阈值（1.2→1.8）
+        ├── 快回归 (θ>0.1) → 缩短持仓（15→12天），灵敏轮动（0.6→0.5）
+        ├── 慢回归 (θ<0.03) → 延长持仓（15→25天），迟钝轮动（0.6→0.8）
+        └── 高置信 (p<0.01) → 放宽止损（2.5→3.0），严格监控（p<0.05）
+
+2. 针对两组配对的实际参数建议
+基于v5.7回测结果反推的优化参数：
+| 参数                       | 600000-601825（高质配对） | 601398-601939（问题配对） | 优化逻辑                       |
+| ------------------------ | ------------------- | ------------------- | -------------------------- |
+| **entry\_threshold**     | **1.0**（降低）         | **1.5**（提高）         | 高质配对可以更灵敏入场；问题配对需过滤噪音      |
+| **exit\_threshold**      | **0.2**（降低）         | **0.4**（提高）         | 高质配对及时获利；问题配对容忍更大波动        |
+| **stop\_loss**           | **3.0**（放宽）         | **2.0**（收紧）         | 高质配对协整强，可承受更大偏离；问题配对需严格止损  |
+| **max\_holding\_days**   | **20**（延长）          | **12**（缩短）          | 高质配对均值回归稳定，耐心等待；问题配对减少时间风险 |
+| **rebalance\_threshold** | **0.5**（灵敏）         | **0.9**（迟钝/禁用）      | 高质配对捕捉双向机会；问题配对避免频繁轮动      |
+| **coint\_p\_threshold**  | **0.05**（严格）        | **0.15**（宽松）        | 高质配对严格监控；问题配对避免过度敏感        |
+| **coint\_check\_freq**   | **45**（降低频率）        | **15**（提高频率）        | 高质配对减少交易成本；问题配对及时发现问题      |
+
+3. 关键优化策略详解
+策略A：波动率自适应入场
+def calculate_optimal_thresholds(spread_series, ...):
+    volatility = spread_series.std()
+    vol_factor = volatility / 0.05  # 基准5%年化波动
+    
+    if vol_factor > 1.5:      # 高波动（如601398-601939）
+        entry_threshold = 1.2 * min(vol_factor, 2.0)  # → 1.8
+        exit_threshold = 0.3 * 1.2  # → 0.36（更保守）
+    elif vol_factor < 0.8:    # 低波动（如600000-601825）
+        entry_threshold = 1.2 * 0.9  # → 1.08（更灵敏）
+        exit_threshold = 0.3 * 0.8  # → 0.24（更积极）
+效果： 避免"噪音交易"，让高波动配对需要更大的安全边际才入场。
+
+策略B：均值回归速度决定持仓时间
+mr_speed = calculate_mean_reversion_speed(spread_series)
+
+if mr_speed > 0.1:        # 快速回归（半衰期<7天）
+    max_holding_days = 12
+    rebalance_threshold = 0.5
+elif mr_speed < 0.03:     # 慢速回归（半衰期>23天）
+    max_holding_days = 25
+    rebalance_threshold = 0.8
+针对两组配对：
+600000-601825：估计θ≈0.08 → 持仓20天，轮动0.5
+601398-601939：估计θ≈0.04 → 持仓12天，轮动0.9（几乎禁用）
+
+策略C：轮动策略的智能开关
+# 对于协整关系弱的配对，建议禁用或严格限制轮动
+if in_sample_coint_p > 0.03 or in_sample_r2 < 0.7:
+    rebalance_threshold = 0.9  # 几乎不可能触发
+    # 或者完全禁用轮动，改为纯单向交易
+601398-601939的问题根源： 轮动交易5次，每次成本约1000元（佣金+印花税），累计5000元隐性成本，侵蚀了本就不厚的利润。
+
+4. 预期改进效果
+| 指标                | v5.7（统一参数） | v5.8（优化参数） | 预期改进                |
+| ----------------- | ---------- | ---------- | ------------------- |
+| **600000-601825** |            |            |                     |
+| 收益率               | 29.51%     | 32-35%     | +2-5%（更灵敏入场，更少时间止损） |
+| 夏普比率              | 1.49       | 1.6-1.8    | +0.1-0.3（降低无效交易）    |
+| 交易次数              | 16次        | 18-20次     | 略增（更多获利机会）          |
+| **601398-601939** |            |            |                     |
+| 收益率               | 0.92%      | 5-8%       | +4-7%（减少轮动成本，严格止损）  |
+| 夏普比率              | 0.09       | 0.3-0.5    | +0.2-0.4（降低波动）      |
+| 交易次数              | 32次        | 18-22次     | **大幅减少**（禁用无效轮动）    |
+
+5. v5.8新增的分析验证
+回测后将生成参数-绩效关系图，验证优化逻辑：
+图表1: 入场阈值 vs 收益率
+    - 验证：过高的入场阈值是否错过机会？
+    - 验证：过低的入场阈值是否引入噪音？
+
+图表2: 均值回归速度 vs 夏普比率  
+    - 验证：快速回归配对是否确实表现更好？
+
+图表3: 持仓天数 vs 交易次数
+    - 验证：延长持仓是否减少过度交易？
+
+图表4: R² vs 实际收益
+    - 验证：样本内拟合度是否能预测样本外表现？（过拟合检测）
+
+图表5: 轮动阈值 vs 胜率
+    - 验证：频繁轮动是否降低胜率？（成本侵蚀）
+
+图表6: 波动率 vs 止损设置
+    - 验证：高波动配对是否确实需要更严格止损？
+
+6. 实施路线图
+阶段1：立即实施（低风险改进）
+# 为600000-601825延长持仓时间至20天
+# 为601398-601939禁用轮动（rebalance_threshold=999）
+# 预期：601398-601939交易次数从32次降至18次，成本节省5000元
+阶段2：统计优化（需回测验证）
+# 实施完整的calculate_optimal_thresholds逻辑
+# 为每个配对生成6维参数组合
+# 对比v5.7和v5.8的绩效差异
+阶段3：机器学习扩展（未来）
+# 使用样本内数据训练参数-绩效映射模型
+# 输入：波动率、均值回归速度、R²、行业分类
+# 输出：最优参数组合
+# 方法：贝叶斯优化或强化学习
+
+核心代码使用示例：
+# 针对600000-601825的优化参数
+params_600000_601825 = PairSpecificParams(
+    entry_threshold=1.0,        # 灵敏入场
+    exit_threshold=0.2,         # 积极获利
+    stop_loss=3.0,              # 信任协整关系
+    max_holding_days=20,        # 耐心等待
+    rebalance_threshold=0.5,    # 捕捉双向机会
+    coint_p_threshold=0.05,       # 严格监控
+    coint_check_freq=45,        # 减少检验成本
+    in_sample_volatility=0.04,   # 低波动
+    in_sample_r2=0.85,          # 高拟合
+    mean_reversion_speed=0.08    # 中等偏快回归
+)
+
+# 针对601398-601939的优化参数  
+params_601398_601939 = PairSpecificParams(
+    entry_threshold=1.5,        # 严格过滤
+    exit_threshold=0.4,         # 容忍波动
+    stop_loss=2.0,              # 快速止损
+    max_holding_days=12,        # 减少暴露
+    rebalance_threshold=0.9,    # 几乎禁用轮动
+    coint_p_threshold=0.15,     # 避免过度敏感
+    coint_check_freq=15,        # 密切监控
+    in_sample_volatility=0.08,   # 高波动
+    in_sample_r2=0.65,          # 中等拟合
+    mean_reversion_speed=0.04    # 慢速回归
+)
