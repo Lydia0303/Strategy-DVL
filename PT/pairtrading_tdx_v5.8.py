@@ -1264,12 +1264,12 @@ if __name__ == "__main__":
     TDX_DATA_DIR = "C:/new_tdx/vipdoc"
 
     IN_SAMPLE_START = "2018-01-01"
-    IN_SAMPLE_END = "2023-12-31"
-    OUT_SAMPLE_START = "2024-01-01"
+    IN_SAMPLE_END = "2021-12-31"
+    OUT_SAMPLE_START = "2022-01-01"
     OUT_SAMPLE_END = "2026-04-08"
 
-    TARGET_INDUSTRY = "渔业"
-    TOP_N_PAIRS = 5
+    TARGET_INDUSTRY = "自动化设备"
+    TOP_N_PAIRS = 2
 
     print("="*80)
     print("A股配对交易策略 v5.8（配对特异性参数优化版）")

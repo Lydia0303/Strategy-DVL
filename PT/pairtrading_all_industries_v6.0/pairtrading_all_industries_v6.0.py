@@ -1,11 +1,12 @@
-# === A股适配的卡尔曼滤波配对轮动策略 v5.7 ===
-# === 融合v5.5的严格样本筛选 + v5.6的可视化与A股适配 ===
+# === A股全行业配对轮动策略 v6.0 ===
+# 基于v5.7扩展：支持全行业批量回测 + ST剔除 + Top2筛选
 
 import struct
 import pandas as pd
 import numpy as np
 import os
 import warnings
+import re
 from statsmodels.tsa.stattools import coint, adfuller
 import statsmodels.api as sm
 from scipy import stats
@@ -15,29 +16,53 @@ from datetime import datetime, timedelta
 from itertools import combinations
 warnings.filterwarnings('ignore')
 
-plt.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'SimSun']
+plt.rcParams['font.sans-serif'] = ['SimHei', 'DejaVu Sans']
 plt.rcParams['axes.unicode_minus'] = False
 
-def get_industry_stocks_local(txt_path, target_industry):
-    """从通达信数据目录读取行业成分股"""
-    industry_stocks = []
+# ==================== 数据读取模块 ====================
+
+def parse_industry_file(txt_path):
+    """
+    解析通达信行业板块文件，返回行业->股票列表的映射
+    文件格式：市场代码 行业名称 股票代码 股票名称
+    """
+    industry_map = {}
+    st_stocks = set()
+
     try:
-        with open(txt_path, 'r', encoding='gbk') as f:
+        with open(txt_path, 'r', encoding='gbk', errors='ignore') as f:
             for line in f:
                 line = line.strip()
                 if not line:
                     continue
                 parts = line.split()
                 if len(parts) >= 4:
+                    market_code = parts[0]
                     industry_name = parts[1]
                     stock_code = parts[2]
-                    if industry_name == target_industry:
-                        industry_stocks.append(stock_code)
-        print(f"从本地文件获取到 {len(industry_stocks)} 只{target_industry}成分股")
-        return industry_stocks
+                    stock_name = parts[3]
+
+                    # 识别ST股票（名称中包含ST）
+                    if 'ST' in stock_name.upper() or '*ST' in stock_name.upper():
+                        st_stocks.add(stock_code)
+                        continue
+
+                    if industry_name not in industry_map:
+                        industry_map[industry_name] = []
+
+                    # 去重
+                    if stock_code not in industry_map[industry_name]:
+                        industry_map[industry_name].append(stock_code)
+
+        print(f"✓ 行业文件解析完成")
+        print(f"  共 {len(industry_map)} 个行业")
+        print(f"  共识别 {len(st_stocks)} 只ST股票")
+
+        return industry_map, st_stocks
+
     except Exception as e:
-        print(f"读取本地文件失败：{e}")
-        return []
+        print(f"✗ 读取行业文件失败：{e}")
+        return {}, set()
 
 def get_stock_data_from_tdx(stock_code, data_dir):
     """从通达信数据目录读取股票日线数据"""
@@ -48,11 +73,10 @@ def get_stock_data_from_tdx(stock_code, data_dir):
         elif stock_code.startswith(('000', '001', '002', '003', '300', '301')):
             prefix = 'sz'
             sub_dir = 'sz'
-        elif stock_code.startswith(('9')):
+        elif stock_code.startswith(('8', '9', '4', '43')):
             prefix = 'bj'
             sub_dir = 'bj'
         else:
-            print(f"未知市场代码: {stock_code}")
             return None
 
         file_name = f"{prefix}{stock_code}.day"
@@ -60,7 +84,9 @@ def get_stock_data_from_tdx(stock_code, data_dir):
         possible_paths = [
             os.path.join(data_dir, sub_dir, "lday", file_name),
             os.path.join(data_dir, file_name),
-            os.path.join(base_path, "vipdoc", sub_dir, "lday", file_name)
+            os.path.join(base_path, "vipdoc", sub_dir, "lday", file_name),
+            os.path.join("C:/new_tdx/vipdoc", sub_dir, "lday", file_name),
+            os.path.join("D:/new_tdx/vipdoc", sub_dir, "lday", file_name),
         ]
 
         file_path = None
@@ -92,13 +118,14 @@ def get_stock_data_from_tdx(stock_code, data_dir):
 
         df = pd.DataFrame(data, columns=['date', 'open', 'high', 'low', 'close', 'volume', 'amount'])
         df.set_index('date', inplace=True)
+        df.sort_index(inplace=True)
         return df
     except Exception as e:
-        print(f"读取{stock_code}数据时出错: {e}")
         return None
 
+# ==================== 卡尔曼滤波器（v5.7原版）====================
+
 class KalmanFilterPairTrading:
-    """卡尔曼滤波器 - 修复数值稳定性"""
     def __init__(self, initial_state=[0.0, 0.0], initial_covariance=1000.0, process_noise=1e-5, observation_noise=1e-3):
         self.state = np.array(initial_state, dtype=float)
         self.covariance = np.array([[initial_covariance, 0], [0, initial_covariance]])
@@ -125,7 +152,7 @@ class KalmanFilterPairTrading:
         return self.state.copy()
 
 def adf_test(series):
-    """ADF检验 - 来自v5.5的严格版本"""
+    """ADF检验"""
     series = pd.Series(series).replace([np.inf, -np.inf], np.nan).dropna()
     if len(series) < 10:
         return 1.0
@@ -141,13 +168,10 @@ def get_dynamic_cooldown(cooldown_count, max_cooldown=10, base_days=2):
     """动态冷却期计算"""
     return min(base_days + cooldown_count * 2, max_cooldown)
 
-class ASharePairsTradingKalmanV5_7:
-    """
-    v5.7: 融合版本
-    - 样本内筛选逻辑：严格遵循v5.5（SSD + 协整检验）
-    - 交易执行：v5.6的单腿轮动（A股适配）
-    - 可视化：v5.6的完整图表
-    """
+# ==================== 策略类（v5.7原版，简化版用于批量回测）====================
+
+class ASharePairsTradingKalmanV6:
+    """v6.0: 针对全行业回测优化的策略类"""
 
     def __init__(self, initial_capital=1000000, commission_rate=0.0003, stamp_tax_rate=0.001,
                  entry_threshold=1.2, exit_threshold=0.3, stop_loss=2.5, 
@@ -192,7 +216,6 @@ class ASharePairsTradingKalmanV5_7:
         self.daily_records = []
         self.equity_curve = []
 
-        # 配对信息
         self.stock1 = None
         self.stock2 = None
 
@@ -215,7 +238,7 @@ class ASharePairsTradingKalmanV5_7:
         """执行买入"""
         shares = self.calculate_position_size(price)
         if shares < 100:
-            return False, f"计算股数不足100股 (计算得{shares}股)"
+            return False, f"计算股数不足100股"
 
         amount = price * shares
         commission = max(amount * self.commission_rate, 5)
@@ -250,7 +273,6 @@ class ASharePairsTradingKalmanV5_7:
             'reason': reason
         }
         self.trade_records.append(record)
-        print(f"    [交易] {date.strftime('%Y-%m-%d')} 买入 {stock_code} {shares}股 @ {price:.2f}, 原因: {reason}")
         return True, "成功"
 
     def execute_sell(self, date, stock_code, price, reason=""):
@@ -288,7 +310,6 @@ class ASharePairsTradingKalmanV5_7:
             'hold_days': (date - pos['entry_date']).days if isinstance(date, datetime) and isinstance(pos['entry_date'], datetime) else 0
         }
         self.trade_records.append(record)
-        print(f"    [交易] {date.strftime('%Y-%m-%d')} 卖出 {stock_code} {shares}股 @ {price:.2f}, 盈亏: {pnl:,.2f}, 原因: {reason}")
         return True, "成功"
 
     def calculate_portfolio_value(self, date, price1, price2):
@@ -320,7 +341,6 @@ class ASharePairsTradingKalmanV5_7:
             log_s1 = log_s1.loc[common_dates]
             log_s2 = log_s2.loc[common_dates]
 
-            # 更新卡尔曼滤波器
             if len(log_s1) > 1 and self.kf is not None:
                 for i in range(len(log_s1)):
                     self.kf.update(log_s1.iloc[i], log_s2.iloc[i])
@@ -397,7 +417,7 @@ class ASharePairsTradingKalmanV5_7:
         self.stock1 = stock1
         self.stock2 = stock2
 
-        # 初始化卡尔曼滤波器（使用样本内数据）
+        # 初始化卡尔曼滤波器
         try:
             sample_data1 = stock1_data.loc[in_sample_start:in_sample_end]
             sample_data2 = stock2_data.loc[in_sample_start:in_sample_end]
@@ -417,12 +437,7 @@ class ASharePairsTradingKalmanV5_7:
                 observation_noise=1e-3
             )
 
-            print(f"\n初始化完成：{stock1}-{stock2}")
-            print(f"初始对冲比率(γ): {initial_gamma:.4f}, 截距(μ): {initial_mu:.4f}")
-            print(f"样本内R²: {model.rsquared:.4f}")
-
         except Exception as e:
-            print(f"初始化失败: {e}")
             return None
 
         out_data1 = stock1_data.loc[out_sample_start:out_sample_end]
@@ -431,10 +446,7 @@ class ASharePairsTradingKalmanV5_7:
         trading_dates = out_data1.index.intersection(out_data2.index)
 
         if len(trading_dates) == 0:
-            print("无交易日数据")
             return None
-
-        print(f"样本外交易日数量: {len(trading_dates)}")
 
         # 预热期
         warmup_period = 20
@@ -461,7 +473,6 @@ class ASharePairsTradingKalmanV5_7:
             if self.cooling_period:
                 if hasattr(self, 'cooling_end_date') and self.cooling_end_date and current_date >= self.cooling_end_date:
                     self.cooling_period = False
-                    print(f"  [{current_date.strftime('%Y-%m-%d')}] 冷却期结束，恢复交易")
                 else:
                     total_value = self.calculate_portfolio_value(current_date, price1, price2)
                     self.daily_records.append({
@@ -485,12 +496,9 @@ class ASharePairsTradingKalmanV5_7:
                 self.coint_check_count += 1
                 self.last_check_date = current_date
 
-                print(f"  [{current_date.strftime('%Y-%m-%d')}] 协整检验 p={adf_p:.4f} {'✓' if is_coint else '✗'}")
-
                 if not is_coint:
                     self.consecutive_fails += 1
                     if self.consecutive_fails >= 3:
-                        print(f"    ⚠️ 连续{self.consecutive_fails}次协整检验失败，进入冷却")
                         if self.holding_stock:
                             self.execute_sell(current_date, self.holding_stock, 
                                             price1 if self.holding_stock == stock1 else price2,
@@ -503,7 +511,6 @@ class ASharePairsTradingKalmanV5_7:
                         self.consecutive_fails = 0
 
                         if self.cooldown_count >= 5:
-                            print(f"    ❌ 配对永久失效")
                             self.pair_valid = False
                             break
                         continue
@@ -564,8 +571,7 @@ class ASharePairsTradingKalmanV5_7:
                     exit_reason = f"价差回归(|Z|={abs(z_score):.2f}<{self.exit_threshold})"
 
                 # 2. 止损
-                elif (self.holding_stock == stock1 and z_score > self.stop_loss) or \
-                     (self.holding_stock == stock2 and z_score < -self.stop_loss):
+                elif (self.holding_stock == stock1 and z_score > self.stop_loss) or                      (self.holding_stock == stock2 and z_score < -self.stop_loss):
                     exit_flag = True
                     exit_reason = f"止损(持仓Z={self.entry_z:.2f}, 当前Z={z_score:.2f})"
 
@@ -575,8 +581,7 @@ class ASharePairsTradingKalmanV5_7:
                     exit_reason = f"时间止损(持仓{self.holding_days}天)"
 
                 # 4. 轮动
-                elif (self.holding_stock == stock2 and z_score < -self.rebalance_threshold) or \
-                     (self.holding_stock == stock1 and z_score > self.rebalance_threshold):
+                elif (self.holding_stock == stock2 and z_score < -self.rebalance_threshold) or                      (self.holding_stock == stock1 and z_score > self.rebalance_threshold):
 
                     other_stock = stock1 if self.holding_stock == stock2 else stock2
                     other_price = price1 if self.holding_stock == stock2 else price2
@@ -613,7 +618,6 @@ class ASharePairsTradingKalmanV5_7:
                     self.cooling_period = True
                     cooldown_days = get_dynamic_cooldown(self.cooldown_count, self.max_cooldown, self.base_cooling_period)
                     self.cooling_end_date = current_date + timedelta(days=cooldown_days)
-                    print(f"    进入{cooldown_days}天冷却期")
 
             # 记录每日状态
             self.daily_records.append({
@@ -702,136 +706,23 @@ class ASharePairsTradingKalmanV5_7:
 
         return report
 
-    def plot_results(self, save_path=None):
-        """绘制回测结果 - 来自v5.6"""
-        if not self.equity_curve or not self.daily_records:
-            print("无数据可绘制")
-            return
+# ==================== 配对筛选模块（v5.5风格）====================
 
-        df_daily = pd.DataFrame(self.daily_records)
-        df_daily.set_index('date', inplace=True)
-
-        dates = [d for d, v in self.equity_curve]
-        values = [v for d, v in self.equity_curve]
-
-        fig = plt.figure(figsize=(16, 12))
-        gs = fig.add_gridspec(3, 2, height_ratios=[2, 1, 1], hspace=0.3)
-
-        # 1. 净值曲线
-        ax1 = fig.add_subplot(gs[0, :])
-        ax1.plot(dates, values, linewidth=2, color='#1f77b4', label='Portfolio Value')
-        ax1.axhline(y=self.initial_capital, color='r', linestyle='--', alpha=0.5, label='Initial Capital')
-
-        # 标记买卖点
-        buys = [t for t in self.trade_records if t['action'] == '买入']
-        sells = [t for t in self.trade_records if t['action'] == '卖出']
-
-        for buy in buys:
-            color = 'red' if buy['stock'] == self.stock1 else 'orange'
-            label = f'Buy {buy["stock"]}' if buy == buys[0] else ""
-            ax1.scatter(buy['date'], buy['cash_after'] + buy['amount'], 
-                       color=color, marker='^', s=100, zorder=5, label=label)
-
-        for sell in sells:
-            label = 'Sell' if sell == sells[0] else ""
-            ax1.scatter(sell['date'], sell['cash_after'], 
-                       color='green', marker='v', s=100, zorder=5, label=label)
-
-        report = self.generate_report()
-        title = f'Backtest: {self.stock1} vs {self.stock2} | Return: {((values[-1]/values[0])-1)*100:.2f}% | Sharpe: {report["sharpe_ratio"]:.2f}'
-        ax1.set_title(title, fontsize=14, fontweight='bold')
-        ax1.set_ylabel('Value (CNY)')
-        ax1.legend(loc='best')
-        ax1.grid(True, alpha=0.3)
-
-        # 2. Z-Score
-        ax2 = fig.add_subplot(gs[1, :], sharex=ax1)
-        ax2.plot(df_daily.index, df_daily['z_score'], color='purple', alpha=0.7, label='Z-Score')
-        ax2.axhline(y=self.entry_threshold, color='r', linestyle='--', alpha=0.5)
-        ax2.axhline(y=-self.entry_threshold, color='r', linestyle='--', alpha=0.5)
-        ax2.axhline(y=self.exit_threshold, color='g', linestyle='--', alpha=0.5)
-        ax2.axhline(y=-self.exit_threshold, color='g', linestyle='--', alpha=0.5)
-        ax2.fill_between(df_daily.index, -self.entry_threshold, self.entry_threshold, alpha=0.1, color='green')
-
-        holding_mask = df_daily['holding'].notna()
-        if holding_mask.any():
-            ax2.fill_between(df_daily.index, -self.entry_threshold*1.5, self.entry_threshold*1.5, 
-                           where=holding_mask, alpha=0.2, color='yellow', label='Holding Period')
-
-        ax2.set_ylabel('Z-Score')
-        ax2.legend(loc='best')
-        ax2.grid(True, alpha=0.3)
-
-        # 3. 对冲比率
-        ax3 = fig.add_subplot(gs[2, :], sharex=ax1)
-        ax3.plot(df_daily.index, df_daily['hedge_ratio'], color='brown', label='Kalman Hedge Ratio (γ)')
-        ax3.set_ylabel('Hedge Ratio')
-        ax3.set_xlabel('Date')
-        ax3.legend(loc='best')
-        ax3.grid(True, alpha=0.3)
-
-        plt.tight_layout()
-
-        if save_path:
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            print(f"图表已保存: {save_path}")
-
-        plt.show()
-
-    def export_trade_log(self, filename=None):
-        """导出交易日志"""
-        if not self.trade_records:
-            print("无交易记录")
-            return pd.DataFrame()
-
-        df_trades = pd.DataFrame(self.trade_records)
-        if 'pnl' in df_trades.columns:
-            df_trades['cumulative_pnl'] = df_trades['pnl'].cumsum()
-
-        if filename:
-            df_trades.to_csv(filename, index=False, encoding='utf-8-sig')
-            print(f"交易日志已保存: {filename}")
-
-        return df_trades
-
-    def export_daily_nav(self, filename=None):
-        """导出每日净值"""
-        if not self.daily_records:
-            print("无每日记录")
-            return pd.DataFrame()
-
-        df_daily = pd.DataFrame(self.daily_records)
-        df_daily.set_index('date', inplace=True)
-        df_daily['daily_return'] = df_daily['total_value'].pct_change()
-        df_daily['cumulative_return'] = (df_daily['total_value'] / self.initial_capital) - 1
-
-        if filename:
-            df_daily.to_csv(filename, encoding='utf-8-sig')
-            print(f"每日净值已保存: {filename}")
-
-        return df_daily
-
-
-def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_end, top_n=5):
+def select_pairs_for_industry(stock_list, data_dict, in_sample_start, in_sample_end, top_n=5):
     """
-    严格遵循v5.5的样本内筛选逻辑：
-    1. 计算所有配对的SSD距离
-    2. 按SSD排序取前N对
-    3. 对这N对进行严格的协整检验（p<0.05）
-    4. 估计对冲比率和统计指标
+    为单个行业筛选配对（v5.5风格）
+    返回：配对列表，每个配对包含详细统计信息
     """
-    print("\n" + "="*80)
-    print("第一步：样本内配对筛选（v5.5风格）")
-    print("="*80)
-
     n = len(stock_list)
+    if n < 2:
+        return []
+
     total_pairs = n * (n - 1) // 2
-    print(f"SSD筛选: 从 {total_pairs} 对中选取前{top_n*3}对进行协整检验")
 
     pair_scores = []
     valid_pair_count = 0
 
-    # 第一阶段：计算SSD距离（快速筛选）
+    # 第一阶段：计算SSD距离
     for i, j in combinations(range(n), 2):
         s1 = stock_list[i]
         s2 = stock_list[j]
@@ -845,17 +736,16 @@ def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_en
         # 严格时间对齐
         common_index = df1.index.intersection(df2.index)
 
-        if len(common_index) < 500:  # 至少2年共同历史
+        if len(common_index) < 500:
             continue
 
         # 截取样本内共同数据
         sample_mask = (common_index >= in_sample_start) & (common_index <= in_sample_end)
         sample_index = common_index[sample_mask]
 
-        if len(sample_index) < 100:  # 样本内至少100天
+        if len(sample_index) < 100:
             continue
 
-        # 使用对齐数据计算
         df1_aligned = df1.loc[sample_index]
         df2_aligned = df2.loc[sample_index]
 
@@ -880,10 +770,7 @@ def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_en
         pair_scores.append((s1, s2, ssd, corr, sample_index))
         valid_pair_count += 1
 
-    print(f"有效配对候选: {valid_pair_count}/{total_pairs}")
-
     if not pair_scores:
-        print("❌ 没有有效的配对候选")
         return []
 
     # 按SSD排序，取前3*N对进行协整检验
@@ -891,8 +778,6 @@ def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_en
     top_pairs = pair_scores[:top_n*3]
 
     # 第二阶段：严格协整检验
-    print(f"\n协整检验: 对前{len(top_pairs)}对进行详细检验 (p<0.05)...")
-
     selection_results = []
 
     for s1, s2, ssd, corr, sample_index in top_pairs:
@@ -902,11 +787,9 @@ def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_en
         if df1 is None or df2 is None:
             continue
 
-        # 复用时间索引
         log_s1 = np.log(df1.loc[sample_index, 'close'])
         log_s2 = np.log(df2.loc[sample_index, 'close'])
 
-        # 清洗数据
         mask = ~np.isnan(log_s1) & ~np.isnan(log_s2) & ~np.isinf(log_s1) & ~np.isinf(log_s2)
         y = log_s1[mask].values
         x = log_s2[mask].values
@@ -928,7 +811,7 @@ def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_en
         residual = y - (intercept + hedge_ratio * x)
         coint_p = adf_test(residual)
 
-        if coint_p < 0.05:  # 严格标准：协整显著
+        if coint_p < 0.05:
             spread_std = residual.std()
             selection_results.append({
                 'stock1': s1,
@@ -942,9 +825,6 @@ def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_en
                 'spread_std': spread_std,
                 'sample_size': len(y)
             })
-            print(f"✓ {s1}-{s2}: SSD={ssd:.2f}, corr={corr:.3f}, hr={hedge_ratio:.4f}, p={coint_p:.4f}")
-        else:
-            print(f"  ✗ 未通过协整检验: {s1}-{s2} (p={coint_p:.4f})")
 
     # 按综合评分排序（SSD + R²）
     selection_results.sort(key=lambda x: (x['ssd'], -x['r_squared']))
@@ -952,204 +832,25 @@ def select_pairs_v5_5_style(stock_list, data_dict, in_sample_start, in_sample_en
     # 取前N对
     final_pairs = selection_results[:top_n]
 
-    print(f"\n✅ 样本内选股完成！共筛选出 {len(final_pairs)} 对符合条件的股票")
-
     return final_pairs
 
+# ==================== 全行业回测主程序 ====================
 
-def run_batch_backtest(selected_pairs, data_dict, in_sample_start, in_sample_end, 
-                       out_sample_start, out_sample_end, params, target_industry):
+def run_all_industries_backtest():
     """
-    批量回测选中的配对，并生成汇总报告和可视化
+    主函数：运行全行业回测
     """
-    print("\n" + "="*80)
-    print("第二步：样本外批量回测")
-    print("="*80)
-
-    all_results = []
-
-    for idx, pair_info in enumerate(selected_pairs):
-        stock1 = pair_info['stock1']
-        stock2 = pair_info['stock2']
-
-        print(f"\n回测第 {idx+1}/{len(selected_pairs)} 对: {stock1} - {stock2}")
-        print(f"样本内对冲比率: {pair_info['hedge_ratio']:.4f}, 协整p值: {pair_info['coint_p']:.4f}")
-
-        df1 = data_dict.get(stock1)
-        df2 = data_dict.get(stock2)
-
-        if df1 is None or df2 is None:
-            print(f"  ✗ 数据缺失，跳过")
-            continue
-
-        # 创建策略实例
-        strategy = ASharePairsTradingKalmanV5_7(**params)
-
-        # 运行回测
-        report = strategy.run_backtest(
-            stock1, stock2, df1, df2,
-            in_sample_start, in_sample_end,
-            out_sample_start, out_sample_end
-        )
-
-        if report is None:
-            print(f"  ✗ 回测失败")
-            continue
-
-        # 添加配对信息到报告
-        report.update({
-            'ssd': pair_info['ssd'],
-            'correlation': pair_info['correlation'],
-            'in_sample_hr': pair_info['hedge_ratio'],
-            'in_sample_r2': pair_info['r_squared'],
-            'in_sample_coint_p': pair_info['coint_p']
-        })
-
-        all_results.append(report)
-
-        # 生成可视化
-        save_path = f"backtest_{stock1}_{stock2}.png"
-        strategy.plot_results(save_path=save_path)
-
-        # 导出数据
-        strategy.export_trade_log(f"trades_{stock1}_{stock2}.csv")
-        strategy.export_daily_nav(f"daily_nav_{stock1}_{stock2}.csv")
-
-        print(f"  ✓ 回测完成: 收益率={report['total_return']*100:.2f}%, 夏普={report['sharpe_ratio']:.2f}")
-
-    # 生成汇总报告
-    generate_summary_report(all_results, target_industry, params)
-
-    return all_results
-
-
-def generate_summary_report(all_results, target_industry, params):
-    """生成汇总报告和对比可视化"""
-    if not all_results:
-        print("\n❌ 无有效回测结果")
-        return
-
-    print("\n" + "="*80)
-    print("样本外回测汇总结果（v5.7融合版）")
-    print("="*80)
-
-    df_results = pd.DataFrame(all_results)
-
-    # 基础统计
-    print(f"\n回测配对数量: {len(df_results)}")
-    print(f"初始总资金: {len(df_results) * 1000000:,.0f}")
-    final_total_value = df_results['final_value'].sum()
-    print(f"最终总资金: {final_total_value:,.0f}")
-    total_return = (final_total_value - len(df_results) * 1000000) / (len(df_results) * 1000000)
-    print(f"总收益率: {total_return*100:.2f}%")
-    print(f"平均收益率: {df_results['total_return'].mean()*100:.2f}%")
-    print(f"平均夏普比率: {df_results['sharpe_ratio'].mean():.2f}")
-    print(f"平均交易次数: {df_results['num_trades'].mean():.1f}")
-    print(f"平均胜率: {df_results['win_rate'].mean()*100:.1f}%")
-
-    # 配对表现排名
-    print("\n配对表现排名:")
-    sorted_results = df_results.sort_values('total_return', ascending=False)
-    for i, (_, r) in enumerate(sorted_results.iterrows()):
-        print(f"{i+1}. {r['stock1']}-{r['stock2']}: 收益={r['total_return']*100:.2f}%, "
-              f"夏普={r['sharpe_ratio']:.2f}, 交易={r['num_trades']}, "
-              f"胜率={r['win_rate']*100:.1f}%, 冷却={r['cooldown_count']}")
-
-    # 保存CSV
-    csv_filename = f"{target_industry}_配对回测汇总_v5.7_{len(df_results)}对.csv"
-    df_results.to_csv(csv_filename, index=False, encoding='utf-8-sig')
-    print(f"\n详细结果已保存: {csv_filename}")
-
-    # 生成对比图表
-    plot_comparison_chart(df_results, target_industry)
-
-
-def plot_comparison_chart(df_results, target_industry):
-    """绘制多配对对比图表"""
-    if len(df_results) == 0:
-        return
-
-    fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-    fig.suptitle(f'{target_industry}行业配对策略回测对比 (v5.7)', fontsize=16, fontweight='bold')
-
-    pair_labels = [f"{r['stock1']}-{r['stock2']}" for _, r in df_results.iterrows()]
-
-    # 1. 收益率对比
-    ax1 = axes[0, 0]
-    colors = ['green' if x > 0 else 'red' for x in df_results['total_return']]
-    ax1.bar(range(len(df_results)), df_results['total_return'] * 100, color=colors, alpha=0.7)
-    ax1.set_title('Total Return (%)')
-    ax1.set_xticks(range(len(df_results)))
-    ax1.set_xticklabels(pair_labels, rotation=45, ha='right')
-    ax1.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-    ax1.grid(True, alpha=0.3)
-
-    # 2. 夏普比率对比
-    ax2 = axes[0, 1]
-    colors = ['green' if x > 0 else 'red' for x in df_results['sharpe_ratio']]
-    ax2.bar(range(len(df_results)), df_results['sharpe_ratio'], color=colors, alpha=0.7)
-    ax2.set_title('Sharpe Ratio')
-    ax2.set_xticks(range(len(df_results)))
-    ax2.set_xticklabels(pair_labels, rotation=45, ha='right')
-    ax2.axhline(y=0, color='black', linestyle='-', linewidth=0.5)
-    ax2.grid(True, alpha=0.3)
-
-    # 3. 胜率对比
-    ax3 = axes[0, 2]
-    ax3.bar(range(len(df_results)), df_results['win_rate'] * 100, color='blue', alpha=0.7)
-    ax3.set_title('Win Rate (%)')
-    ax3.set_xticks(range(len(df_results)))
-    ax3.set_xticklabels(pair_labels, rotation=45, ha='right')
-    ax3.set_ylim(0, 100)
-    ax3.grid(True, alpha=0.3)
-
-    # 4. 交易次数
-    ax4 = axes[1, 0]
-    ax4.bar(range(len(df_results)), df_results['num_trades'], color='purple', alpha=0.7)
-    ax4.set_title('Number of Trades')
-    ax4.set_xticks(range(len(df_results)))
-    ax4.set_xticklabels(pair_labels, rotation=45, ha='right')
-    ax4.grid(True, alpha=0.3)
-
-    # 5. 最大回撤
-    ax5 = axes[1, 1]
-    ax5.bar(range(len(df_results)), df_results['max_drawdown'] * 100, color='orange', alpha=0.7)
-    ax5.set_title('Max Drawdown (%)')
-    ax5.set_xticks(range(len(df_results)))
-    ax5.set_xticklabels(pair_labels, rotation=45, ha='right')
-    ax5.grid(True, alpha=0.3)
-
-    # 6. 样本内R² vs 样本外收益
-    ax6 = axes[1, 2]
-    if 'in_sample_r2' in df_results.columns:
-        ax6.scatter(df_results['in_sample_r2'], df_results['total_return'] * 100, s=100, alpha=0.7)
-        for i, row in df_results.iterrows():
-            ax6.annotate(f"{row['stock1']}-{row['stock2']}", 
-                        (row['in_sample_r2'], row['total_return'] * 100),
-                        fontsize=8, alpha=0.7)
-        ax6.set_xlabel('In-Sample R²')
-        ax6.set_ylabel('Out-Sample Return (%)')
-        ax6.set_title('In-Sample Fit vs Out-Sample Performance')
-        ax6.grid(True, alpha=0.3)
-
-    plt.tight_layout()
-    plt.savefig(f'{target_industry}_配对对比图_v5.7.png', dpi=300, bbox_inches='tight')
-    print(f"对比图已保存: {target_industry}_配对对比图_v5.7.png")
-    plt.show()
-
-
-if __name__ == "__main__":
     # 配置参数
     LOCAL_INDUSTRY_TXT_PATH = "C:/new_tdx/T0002/export/行业板块.txt"
     TDX_DATA_DIR = "C:/new_tdx/vipdoc"
 
     IN_SAMPLE_START = "2018-01-01"
-    IN_SAMPLE_END = "2023-12-31"
-    OUT_SAMPLE_START = "2024-01-01"
+    IN_SAMPLE_END = "2021-12-31"
+    OUT_SAMPLE_START = "2022-01-01"
     OUT_SAMPLE_END = "2026-04-08"
 
-    TARGET_INDUSTRY = "其他发电设备"
-    TOP_N_PAIRS = 5  # 回测前N对
+    TOP_N_PAIRS_PER_INDUSTRY = 5  # 每个行业先选5对，回测后取前2
+    FINAL_TOP_N = 2  # 每个行业最终保留前2
 
     PARAMS = {
         'initial_capital': 1000000,
@@ -1168,79 +869,222 @@ if __name__ == "__main__":
     }
 
     print("="*80)
-    print("A股配对交易策略 v5.7（融合版）")
-    print(f"目标行业: {TARGET_INDUSTRY}")
-    print(f"回测前{TOP_N_PAIRS}对筛选出的配对")
+    print("A股全行业配对交易策略 v6.0")
+    print(f"样本内: {IN_SAMPLE_START} ~ {IN_SAMPLE_END}")
+    print(f"样本外: {OUT_SAMPLE_START} ~ {OUT_SAMPLE_END}")
+    print(f"每个行业选取收益率前{FINAL_TOP_N}的配对")
     print("="*80)
 
-    # 获取行业成分股
-    industry_stocks = get_industry_stocks_local(LOCAL_INDUSTRY_TXT_PATH, TARGET_INDUSTRY)
-    if not industry_stocks:
-        print("无有效成分股，程序退出！")
-        exit()
+    # 1. 解析行业文件
+    print("\n[1/5] 解析行业板块文件...")
+    industry_map, st_stocks = parse_industry_file(LOCAL_INDUSTRY_TXT_PATH)
 
-    # 预加载所有股票数据
-    print("\n预加载股票数据...")
-    data_dict = {}
-    valid_stocks = []
+    if not industry_map:
+        print("✗ 行业文件解析失败，程序退出")
+        return
 
-    for code in industry_stocks:
-        df = get_stock_data_from_tdx(code, TDX_DATA_DIR)
-        if df is None:
+    print(f"  发现 {len(industry_map)} 个行业板块")
+
+    # 2. 遍历每个行业
+    all_industry_results = []
+
+    for idx, (industry_name, stock_codes) in enumerate(industry_map.items(), 1):
+        print(f"\n{'='*80}")
+        print(f"[{idx}/{len(industry_map)}] 处理行业: {industry_name}")
+        print(f"{'='*80}")
+
+        # 剔除ST股票
+        clean_stocks = [s for s in stock_codes if s not in st_stocks]
+        removed_count = len(stock_codes) - len(clean_stocks)
+
+        print(f"  原始成分股: {len(stock_codes)} 只")
+        if removed_count > 0:
+            print(f"  剔除ST股票: {removed_count} 只")
+        print(f"  有效成分股: {len(clean_stocks)} 只")
+
+        if len(clean_stocks) < 2:
+            print(f"  ⚠️ 有效股票不足2只，跳过该行业")
             continue
 
-        try:
-            # 检查样本内数据
-            sample_df = df.loc[IN_SAMPLE_START:IN_SAMPLE_END]
-            if len(sample_df) >= 100:
-                # 检查历史数据长度
-                full_history = df.loc[:IN_SAMPLE_END]
-                if len(full_history) >= 500:
-                    data_dict[code] = df
-                    valid_stocks.append(code)
-                    print(f"  ✓ {code}: 样本内{len(sample_df)}天, 历史{len(full_history)}天")
-                else:
-                    print(f"  ✗ {code}: 历史数据不足 ({len(full_history)}天 < 500天)")
-            else:
-                print(f"  ✗ {code}: 样本内数据不足 ({len(sample_df)}天 < 100天)")
-        except Exception as e:
-            print(f"  ✗ {code}: 数据读取异常 ({e})")
+        # 3. 预加载该行业所有股票数据
+        print(f"\n  [2/5] 加载股票数据...")
+        data_dict = {}
+        valid_stocks = []
 
-    print(f"\n有效成分股: {len(valid_stocks)} 只")
+        for code in clean_stocks:
+            df = get_stock_data_from_tdx(code, TDX_DATA_DIR)
+            if df is None:
+                continue
 
-    if len(valid_stocks) < 2:
-        print("有效股票不足2只，程序退出！")
-        exit()
+            try:
+                # 检查样本内数据
+                sample_df = df.loc[IN_SAMPLE_START:IN_SAMPLE_END]
+                if len(sample_df) >= 100:
+                    full_history = df.loc[:IN_SAMPLE_END]
+                    if len(full_history) >= 500:
+                        data_dict[code] = df
+                        valid_stocks.append(code)
+            except:
+                continue
 
-    # 第一步：样本内筛选配对（v5.5风格）
-    selected_pairs = select_pairs_v5_5_style(
-        valid_stocks, data_dict, 
-        IN_SAMPLE_START, IN_SAMPLE_END, 
-        TOP_N_PAIRS
-    )
+        print(f"  有效数据股票: {len(valid_stocks)}/{len(clean_stocks)} 只")
 
-    if not selected_pairs:
-        print("\n❌ 未筛选出符合条件的配对，程序退出！")
-        exit()
+        if len(valid_stocks) < 2:
+            print(f"  ⚠️ 有效数据不足，跳过该行业")
+            continue
 
-    # 保存筛选结果
-    df_selection = pd.DataFrame(selected_pairs)
-    df_selection.to_csv(f"{TARGET_INDUSTRY}_样本内筛选结果_v5.7_{len(selected_pairs)}对.csv", 
-                        index=False, encoding='utf-8-sig')
+        # 4. 样本内配对筛选
+        print(f"\n  [3/5] 样本内配对筛选...")
+        selected_pairs = select_pairs_for_industry(
+            valid_stocks, data_dict, 
+            IN_SAMPLE_START, IN_SAMPLE_END, 
+            TOP_N_PAIRS_PER_INDUSTRY
+        )
 
-    # 第二步：批量回测（v5.6风格执行 + 批量管理）
-    all_results = run_batch_backtest(
-        selected_pairs, data_dict,
-        IN_SAMPLE_START, IN_SAMPLE_END,
-        OUT_SAMPLE_START, OUT_SAMPLE_END,
-        PARAMS, TARGET_INDUSTRY
-    )
+        if not selected_pairs:
+            print(f"  ⚠️ 未筛选出符合条件的配对，跳过该行业")
+            continue
+
+        print(f"  筛选出 {len(selected_pairs)} 对候选配对")
+
+        # 5. 样本外回测所有候选配对
+        print(f"\n  [4/5] 样本外回测...")
+        industry_pair_results = []
+
+        for pair_idx, pair_info in enumerate(selected_pairs):
+            stock1 = pair_info['stock1']
+            stock2 = pair_info['stock2']
+
+            df1 = data_dict.get(stock1)
+            df2 = data_dict.get(stock2)
+
+            if df1 is None or df2 is None:
+                continue
+
+            # 创建策略实例并回测
+            strategy = ASharePairsTradingKalmanV6(**PARAMS)
+
+            report = strategy.run_backtest(
+                stock1, stock2, df1, df2,
+                IN_SAMPLE_START, IN_SAMPLE_END,
+                OUT_SAMPLE_START, OUT_SAMPLE_END
+            )
+
+            if report is None:
+                continue
+
+            # 添加行业和配对信息
+            report.update({
+                'industry': industry_name,
+                'ssd': pair_info['ssd'],
+                'correlation': pair_info['correlation'],
+                'in_sample_hr': pair_info['hedge_ratio'],
+                'in_sample_r2': pair_info['r_squared'],
+                'in_sample_coint_p': pair_info['coint_p']
+            })
+
+            industry_pair_results.append(report)
+            print(f"    配对 {pair_idx+1}/{len(selected_pairs)}: {stock1}-{stock2} | 收益: {report['total_return']*100:.2f}% | 夏普: {report['sharpe_ratio']:.2f}")
+
+        if not industry_pair_results:
+            print(f"  ⚠️ 所有配对回测失败，跳过该行业")
+            continue
+
+        # 6. 按收益率排序，取前N
+        print(f"\n  [5/5] 筛选Top {FINAL_TOP_N} 配对...")
+        sorted_results = sorted(industry_pair_results, key=lambda x: x['total_return'], reverse=True)
+        top_pairs = sorted_results[:FINAL_TOP_N]
+
+        print(f"  ✓ 选中配对:")
+        for i, r in enumerate(top_pairs, 1):
+            print(f"    {i}. {r['stock1']}-{r['stock2']}: 收益={r['total_return']*100:.2f}%, 夏普={r['sharpe_ratio']:.2f}")
+
+        all_industry_results.extend(top_pairs)
+
+    # 7. 生成最终汇总报告
+    print(f"\n{'='*80}")
+    print("全行业回测完成！生成汇总报告...")
+    print(f"{'='*80}")
+
+    if not all_industry_results:
+        print("✗ 没有成功的回测结果")
+        return
+
+    # 创建汇总DataFrame
+    df_summary = pd.DataFrame(all_industry_results)
+
+    # 调整列顺序
+    column_order = [
+        'industry', 'stock1', 'stock2', 'total_return', 'sharpe_ratio',
+        'max_drawdown', 'win_rate', 'num_trades', 'profit_loss_ratio',
+        'in_sample_r2', 'in_sample_coint_p', 'correlation', 'ssd',
+        'final_value', 'initial_capital', 'cooldown_count'
+    ]
+
+    # 只保留存在的列
+    existing_cols = [c for c in column_order if c in df_summary.columns]
+    df_summary = df_summary[existing_cols]
+
+    # 格式化数值列
+    if 'total_return' in df_summary.columns:
+        df_summary['total_return_pct'] = (df_summary['total_return'] * 100).round(2)
+    if 'win_rate' in df_summary.columns:
+        df_summary['win_rate_pct'] = (df_summary['win_rate'] * 100).round(1)
+    if 'max_drawdown' in df_summary.columns:
+        df_summary['max_drawdown_pct'] = (df_summary['max_drawdown'] * 100).round(2)
+
+    # 保存详细结果
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    detail_file = f"全行业配对回测详细结果_{timestamp}.csv"
+    df_summary.to_csv(detail_file, index=False, encoding='utf-8-sig')
+    print(f"\n✓ 详细结果已保存: {detail_file}")
+
+    # 生成简洁版分析表格
+    df_analysis = df_summary[['industry', 'stock1', 'stock2', 'total_return_pct', 
+                              'sharpe_ratio', 'max_drawdown_pct', 'win_rate_pct', 
+                              'num_trades', 'in_sample_r2', 'in_sample_coint_p']].copy()
+    df_analysis.columns = ['行业', '股票1', '股票2', '收益率(%)', '夏普比率', 
+                          '最大回撤(%)', '胜率(%)', '交易次数', '样本内R²', '协整P值']
+
+    analysis_file = f"全行业配对分析表_{timestamp}.csv"
+    df_analysis.to_csv(analysis_file, index=False, encoding='utf-8-sig')
+    print(f"✓ 分析表格已保存: {analysis_file}")
+
+    # 打印汇总统计
+    print(f"\n{'='*80}")
+    print("汇总统计")
+    print(f"{'='*80}")
+    print(f"成功回测行业数: {df_summary['industry'].nunique()}")
+    print(f"总配对数: {len(df_summary)}")
+    print(f"平均收益率: {df_summary['total_return'].mean()*100:.2f}%")
+    print(f"平均夏普比率: {df_summary['sharpe_ratio'].mean():.2f}")
+    print(f"平均最大回撤: {df_summary['max_drawdown'].mean()*100:.2f}%")
+    print(f"胜率>50%的配对数: {len(df_summary[df_summary['win_rate'] > 0.5])}")
+    print(f"正收益配对数: {len(df_summary[df_summary['total_return'] > 0])}")
+
+    # 按行业分组统计
+    print(f"\n{'='*80}")
+    print("各行业表现")
+    print(f"{'='*80}")
+    industry_stats = df_summary.groupby('industry').agg({
+        'total_return': 'mean',
+        'sharpe_ratio': 'mean',
+        'max_drawdown': 'mean'
+    }).round(4)
+    industry_stats.columns = ['平均收益率', '平均夏普', '平均回撤']
+    print(industry_stats)
+
+    # 保存行业统计
+    stats_file = f"全行业统计_{timestamp}.csv"
+    industry_stats.to_csv(stats_file, encoding='utf-8-sig')
+    print(f"\n✓ 行业统计已保存: {stats_file}")
 
     print(f"\n{'='*80}")
-    print("v5.7融合版执行完成！")
-    print("主要特性:")
-    print("1. 样本内筛选：SSD距离 + 严格协整检验（p<0.05）- 来自v5.5")
-    print("2. 交易执行：单腿轮动策略（A股适配）- 来自v5.6")
-    print("3. 可视化：完整的单配对图表 + 多配对对比图 - 来自v5.6")
-    print("4. 批量管理：支持前N对股票的并行回测和汇总 - 新增")
+    print("全部完成！")
     print(f"{'='*80}")
+
+    return df_summary, df_analysis
+
+if __name__ == "__main__":
+    # 运行全行业回测
+    df_detail, df_analysis = run_all_industries_backtest()
