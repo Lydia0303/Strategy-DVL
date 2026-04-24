@@ -274,7 +274,7 @@ def plot_portfolio_nav_curve(df):
         
         # 对齐到共同日期
         aligned = curve.reindex(common_dates, method='ffill')
-        aligned['nav'] = aligned['nav'].ffill().fillna(1.0) # aligned['nav'] = aligned['nav'].fillna(method='ffill').fillna(1.0)
+        aligned['nav'] = aligned['nav'].ffill().fillna(1.0) 
         portfolio_nav += aligned['nav'] * (weight / total_weight)
     
     # 归一化

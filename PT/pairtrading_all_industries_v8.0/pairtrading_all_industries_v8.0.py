@@ -1,4 +1,4 @@
-# === A股全行业配对轮动策略 v7.2 ===
+# === A股全行业配对轮动策略 v8.0 ===
 # 基于v7.1优化：改用申万行业分类数据（新版二级行业）
 # 修复：增加调试输出，优化行业筛选逻辑
 
@@ -29,10 +29,10 @@ CONFIG = {
     'TDX_DATA_DIR': "C:/new_tdx/vipdoc",
 
     # 回测时间区间
-    'IN_SAMPLE_START': "2015-01-01",
-    'IN_SAMPLE_END': "2017-12-31",
-    'OUT_SAMPLE_START': "2018-01-01",
-    'OUT_SAMPLE_END': "2018-12-31",
+    'IN_SAMPLE_START': "2022-01-01",
+    'IN_SAMPLE_END': "2025-12-31",
+    'OUT_SAMPLE_START': "2026-01-01",
+    'OUT_SAMPLE_END': "2026-04-16",
 
     # 筛选参数
     'TOP_N_PAIRS_PER_INDUSTRY': 5,
@@ -254,12 +254,12 @@ class AdaptiveThresholdManager:
 
             if len(spread_returns) < 30:
                 return None, None
-
+            # 1. 年化波动率计算（保留你原来的逻辑）
             volatility = np.std(spread_returns) * np.sqrt(252)
 
             from statsmodels.regression.linear_model import OLS as SM_OLS
             from statsmodels.tools.tools import add_constant
-
+            # 2. 半衰期计算（优化：数学稳定性 + 极端情况保护）
             lag_spread = spread.shift(1).dropna()
             delta_spread = spread.diff().dropna()
             valid_idx = lag_spread.index.intersection(delta_spread.index)
@@ -272,30 +272,31 @@ class AdaptiveThresholdManager:
                 try:
                     model = SM_OLS(y, X).fit()
                     rho = model.params.iloc[1] if len(model.params) > 1 else 0
-                    halflife = -np.log(2) / np.log(abs(rho)) if 0 < abs(rho) < 1 else 15
+                    if 0 < abs(rho) < 1:
+                        # 增加极小保护，防止 log(0.999999) 导致分母接近0 → 数值爆炸
+                        denominator = np.log(abs(rho))
+                        halflife = 15 if abs(denominator) < 1e-6 else -np.log(2) / denominator
+            
                     halflife = max(5, min(halflife, 60))
                 except:
                     halflife = 15
-
+            # 3. 波动率因子（优化：从硬分段改为连续平滑函数，vol_factor 在 0.75 ~ 1.6 之间连续变化
+            vol_factor = 0.75 + (volatility / 0.4) * (1.6 - 0.75)
+            vol_factor = np.clip(vol_factor, 0.75, 1.6)  
+            # 4.持仓因子不变
             if volatility > 0.40:
-                vol_factor = 1.6
                 hold_factor = 2.2
             elif volatility > 0.30:
-                vol_factor = 1.4
                 hold_factor = 1.8
             elif volatility > 0.22:
-                vol_factor = 1.2
                 hold_factor = 1.4
             elif volatility > 0.15:
-                vol_factor = 1.0
                 hold_factor = 1.0
             elif volatility > 0.10:
-                vol_factor = 0.85
                 hold_factor = 0.9
             else:
-                vol_factor = 0.75
                 hold_factor = 0.8
-
+            # 5. 速度因子不变
             if halflife < 8:
                 speed_factor = 0.8
             elif halflife < 15:
@@ -504,9 +505,23 @@ class AdaptivePairTradingInstance:
         total_cost = amount + commission
 
         if total_cost > self.cash:
-            max_shares = int(self.cash / price / 100) * 100
+            # ============ 修改这里开始 ============
+            # 迭代计算最大可买数量（考虑交易成本）
+            available_cash = self.cash
+            max_shares = 0
+            # 从100股开始，每次增加100股
+            for trial_shares in range(100, int(available_cash / price) + 100, 100):
+                trial_amount = price * trial_shares
+                trial_commission = max(trial_amount * self.params['commission_rate'], 5)
+                trial_total = trial_amount + trial_commission
+                if trial_total <= available_cash:
+                     max_shares = trial_shares
+                else:
+                     break #超过资金，停止尝试
+        
             if max_shares < 100:
                 return False, "资金不足"
+            # ============ 修改这里结束 ============
             shares = max_shares
             amount = price * shares
             commission = max(amount * self.params['commission_rate'], 5)
@@ -910,12 +925,12 @@ def select_pairs_for_industry(stock_list, data_dict, in_sample_start, in_sample_
 
 # ==================== 主函数 ====================
 
-def run_portfolio_backtest_v7_2():
-    """v7.2主函数：使用申万行业分类数据"""
+def run_portfolio_backtest_v8_0():
+    """v8.0主函数：使用申万行业分类数据"""
     cfg = CONFIG
 
     print("="*80)
-    print("A股全行业配对交易策略 v7.2 - 申万行业分类数据源")
+    print("A股全行业配对交易策略 v8.0 - 申万行业分类数据源")
     print(f"初始资金: {cfg['PORTFOLIO_CAPITAL']:,.0f}")
     print(f"滑点: {cfg['SLIPPAGE']:.2%}")
     print(f"行业分类: {cfg['INDUSTRY_COLUMN']}")
@@ -1154,7 +1169,7 @@ def run_portfolio_backtest_v7_2():
             pair['equity_file'] = None
     
     # 打包净值数据为ZIP文件
-    zip_filename = f"v7.2_净值数据_{timestamp}.zip"
+    zip_filename = f"v8.0_净值数据_{timestamp}.zip"
     with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
         for equity_file in equity_files:
             arcname = os.path.basename(equity_file)
@@ -1172,7 +1187,7 @@ def run_portfolio_backtest_v7_2():
     portfolio_sharpe = np.mean([p['report']['sharpe_ratio'] for p in final_pairs])  # 简化
 
     print(f"\n{'='*80}")
-    print("v7.2组合回测结果")
+    print("v8.0组合回测结果")
     print(f"{'='*80}")
     print(f"初始资金: {total_capital:,.0f}")
     print(f"参与行业: {len(weights)}")
@@ -1182,10 +1197,10 @@ def run_portfolio_backtest_v7_2():
     print(f"滑点成本占比: {portfolio_slippage*100:.2f}%")
     print(f"净收益率: {(portfolio_return - portfolio_slippage)*100:.2f}%")
 
-    print(f"\n【v7.2改进点】")
-    print(f"1. 申万行业分类: 使用新版二级行业分类，更精细的行业划分")
-    print(f"2. 自适应阈值: 高波动行业提高阈值，减少交易频率")
-    print(f"3. 风险收益比权重: 低收益行业被剔除或降权")
+    print(f"\n【v8.0改进点】")
+    print(f"1. 修复半衰期计算的数学不稳定性（核心）: 增加极小保护，防止 log(0.999999) 导致分母接近0 → 数值爆炸")
+    print(f"2. 自适应阈值计算: 波动率因子从 “硬分段” → “连续平滑函数”")
+    print(f"3. 配对交易类: 买入股数计算不一致，小额交易无法进行，改为精确考虑交易成本、资金利用最大化")
     print(f"4. 权重约束: 单行业上限15%，避免过度集中")
 
     # 创建最终结果表格
@@ -1228,7 +1243,7 @@ def run_portfolio_backtest_v7_2():
     results_df = pd.DataFrame(results_data)
     
     # 保存结果文件
-    results_file = f"v7.2_组合回测结果_{timestamp}.csv"
+    results_file = f"v8.0_组合回测结果_{timestamp}.csv"
     results_df.to_csv(results_file, index=False, encoding='utf-8-sig', float_format='%.4f')
     print(f"✓ 结果已保存: {results_file}")
 
@@ -1258,12 +1273,12 @@ def run_portfolio_backtest_v7_2():
 
     if trade_details:
         trade_details_df = pd.DataFrame(trade_details)
-        trade_file = f"v7.2_交易明细_{timestamp}.csv"
+        trade_file = f"v8.0_交易明细_{timestamp}.csv"
         trade_details_df.to_csv(trade_file, index=False, encoding='utf-8-sig')
         print(f"✓ 交易明细已保存: {trade_file}")
 
     # 保存配置
-    config_file = f"v7.2_回测配置_{timestamp}.json"
+    config_file = f"v8.0_回测配置_{timestamp}.json"
     with open(config_file, 'w') as f:
         json.dump({k: str(v) if isinstance(v, (datetime, pd.Timestamp)) else v 
                   for k, v in cfg.items()}, f, indent=2, default=str)
@@ -1279,4 +1294,4 @@ def run_portfolio_backtest_v7_2():
 
 
 if __name__ == "__main__":
-    run_portfolio_backtest_v7_2()
+    run_portfolio_backtest_v8_0()
