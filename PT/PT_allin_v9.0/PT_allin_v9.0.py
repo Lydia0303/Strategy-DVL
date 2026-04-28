@@ -972,52 +972,52 @@ class RiskAdjustedParityAllocator:
     
         return weights
 
-def _apply_constraints(self, weights):
-    for iteration in range(10):
-        excess_total = 0
-        valid_count = 0
+    def _apply_constraints(self, weights):
+        for iteration in range(10):
+            excess_total = 0
+            valid_count = 0
         
-        # 先找出有效行业
-        valid_industries = [k for k, v in weights.items() if v < self.max_w]
-        valid_count = len(valid_industries)
+            # 先找出有效行业
+            valid_industries = [k for k, v in weights.items() if v < self.max_w]
+            valid_count = len(valid_industries)
         
-        for k in list(weights.keys()):
-            if weights[k] > self.max_w:
-                excess = weights[k] - self.max_w
-                excess_total += excess
-                weights[k] = self.max_w
+            for k in list(weights.keys()):
+                if weights[k] > self.max_w:
+                    excess = weights[k] - self.max_w
+                    excess_total += excess
+                    weights[k] = self.max_w
 
-        if excess_total > 0:
-            if valid_count > 0:
-                # 如果有有效行业，分配给它们
-                redistribution = excess_total / valid_count
-                for k in valid_industries:
-                    weights[k] += redistribution
-            else:
-                # 如果没有有效行业，分配给所有行业
-                redistribution = excess_total / len(weights)
-                for k in weights:
-                    weights[k] += redistribution
+            if excess_total > 0:
+                if valid_count > 0:
+                    # 如果有有效行业，分配给它们
+                    redistribution = excess_total / valid_count
+                    for k in valid_industries:
+                        weights[k] += redistribution
+                else:
+                    # 如果没有有效行业，分配给所有行业
+                    redistribution = excess_total / len(weights)
+                    for k in weights:
+                        weights[k] += redistribution
 
-        to_remove = [k for k, v in weights.items() if v < self.min_w]
-        if to_remove:
-            removed_weight = sum(weights[k] for k in to_remove)
-            for k in to_remove:
-                del weights[k]
+            to_remove = [k for k, v in weights.items() if v < self.min_w]
+            if to_remove:
+                removed_weight = sum(weights[k] for k in to_remove)
+                for k in to_remove:
+                    del weights[k]
 
-            if weights:
-                redistribution = removed_weight / len(weights)
-                for k in weights:
-                    weights[k] += redistribution
+                if weights:
+                    redistribution = removed_weight / len(weights)
+                    for k in weights:
+                        weights[k] += redistribution
 
-        if all(self.min_w <= v <= self.max_w for v in weights.values()):
-            break
+            if all(self.min_w <= v <= self.max_w for v in weights.values()):
+                break
 
-    total = sum(weights.values())
-    if total > 0:
-        return {k: v / total for k, v in weights.items()}
-    else:
-        return {}
+        total = sum(weights.values())
+        if total > 0:
+            return {k: v / total for k, v in weights.items()}
+        else:
+            return {}
 
 
 # ==================== 配对筛选模块 ====================
