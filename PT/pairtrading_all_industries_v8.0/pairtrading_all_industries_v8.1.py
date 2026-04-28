@@ -2231,7 +2231,6 @@ def run_portfolio_backtest_v8_1():
     else:  # 'single_debug'
         # 单次回测调试模式
         print(f"\n[2/6] 单次回测调试模式（仅用于快速调试）...")
-        print("  ⚠️ 警告：此模式存在前视偏差，不适用于实盘验证")
         
         final_pairs = run_single_debug_backtest(industry_map, st_stocks, bse_stocks, cfg, momentum_calculator)
     

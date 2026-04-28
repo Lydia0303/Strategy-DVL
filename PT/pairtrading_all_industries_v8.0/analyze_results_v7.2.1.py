@@ -23,13 +23,13 @@ plt.rcParams['axes.unicode_minus'] = False
 plt.style.use('seaborn-v0_8-darkgrid')
 
 def load_latest_results():
-    """加载最新的v7.2回测结果文件"""
+    """加载最新的v8.1回测结果文件"""
     # 仅保留v7.2/v7.1格式，移除v7.0回退逻辑
-    files = glob.glob("v7.2_组合回测结果_*.csv")
+    files = glob.glob("v8.1_组合回测结果_*.csv")
     if not files:
         files = glob.glob("v7.1_组合回测结果_*.csv")
         if not files:
-            print("未找到v7.1/v7.2回测结果文件")
+            print("未找到v7.1/v8.1回测结果文件")
             return None, None
 
     latest_file = max(files, key=os.path.getctime)
@@ -39,8 +39,8 @@ def load_latest_results():
 
     # 检测版本（仅保留v7.1/v7.2）
     if 'halflife' in df.columns or 'entry_threshold' in df.columns:
-        if 'v7.2' in latest_file:
-            version = "v7.2"
+        if 'v8.1' in latest_file:
+            version = "v8.1"
         else:
             version = "v7.1"
     else:
@@ -55,7 +55,7 @@ def load_latest_results():
 
 def plot_portfolio_nav_curve(df):
     """
-    【v7.2修复】组合策略整体净值走势图
+    【v8.1修复】组合策略整体净值走势图
     基于实际回测结果的equity_curve数据计算组合净值
     """
     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun', 'FangSong', 'KaiTi']
@@ -210,8 +210,8 @@ def plot_portfolio_nav_curve(df):
     ax4.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('v7.2_组合净值走势分析.png', dpi=300, bbox_inches='tight')
-    print("✓ 图表已保存: v7.2_组合净值走势分析.png")
+    plt.savefig('v8.1_组合净值走势分析.png', dpi=300, bbox_inches='tight')
+    print("✓ 图表已保存: v8.1_组合净值走势分析.png")
     plt.show()
 
     return portfolio_nav
@@ -324,16 +324,16 @@ def plot_portfolio_nav_curve_simplified(df):
     ax4.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('v7.2_组合净值走势分析_估算.png', dpi=300, bbox_inches='tight')
-    print("✓ 图表已保存: v7.2_组合净值走势分析_估算.png（注意：基于估算数据）")
+    plt.savefig('v8.1_组合净值走势分析_估算.png', dpi=300, bbox_inches='tight')
+    print("✓ 图表已保存: v8.1_组合净值走势分析_估算.png（注意：基于估算数据）")
     plt.show()
 
 def plot_adaptive_params_analysis_v72(df):
-    """【v7.2】自适应参数分析（申万行业版）"""
+    """【v8.1】自适应参数分析（申万行业版）"""
     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun', 'FangSong', 'KaiTi']
     plt.rcParams['axes.unicode_minus'] = False
     if 'halflife' not in df.columns:
-        print("⚠️ 非v7.1/v7.2格式，跳过自适应参数分析")
+        print("⚠️ 非v7.1/v8.1格式，跳过自适应参数分析")
         return
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
@@ -392,12 +392,12 @@ def plot_adaptive_params_analysis_v72(df):
     ax4.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('v7.2_自适应参数分析.png', dpi=300, bbox_inches='tight')
-    print("✓ 图表已保存: v7.2_自适应参数分析.png")
+    plt.savefig('v8.1_自适应参数分析.png', dpi=300, bbox_inches='tight')
+    print("✓ 图表已保存: v8.1_自适应参数分析.png")
     plt.show()
 
 def plot_industry_weights_v72(df):
-    """v7.2专属：申万行业权重分配可视化（支持单行业情况）"""
+    """v8.1专属：申万行业权重分配可视化（支持单行业情况）"""
     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun', 'FangSong', 'KaiTi']
     plt.rcParams['axes.unicode_minus'] = False
     if 'industry_weight' not in df.columns:
@@ -431,8 +431,8 @@ def plot_industry_weights_v72(df):
         ax2.grid(True, alpha=0.3, axis='y')
 
         plt.tight_layout()
-        plt.savefig('v7.2_申万行业权重分配.png', dpi=300, bbox_inches='tight')
-        print("✓ 图表已保存: v7.2_申万行业权重分配.png（单行业模式）")
+        plt.savefig('v8.1_申万行业权重分配.png', dpi=300, bbox_inches='tight')
+        print("✓ 图表已保存: v8.1_申万行业权重分配.png（单行业模式）")
         plt.show()
         return
 
@@ -519,8 +519,8 @@ def plot_industry_weights_v72(df):
     ax4.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
-    plt.savefig('v7.2_申万行业权重分配.png', dpi=300, bbox_inches='tight')
-    print("✓ 图表已保存: v7.2_申万行业权重分配.png")
+    plt.savefig('v8.1_申万行业权重分配.png', dpi=300, bbox_inches='tight')
+    print("✓ 图表已保存: v8.1_申万行业权重分配.png")
     plt.show()
 
 def plot_slippage_analysis_v72(df):
@@ -558,7 +558,7 @@ def plot_slippage_analysis_v72(df):
                          s=100, alpha=0.6, edgecolors='black')
     ax2.set_xlabel('交易次数')
     ax2.set_ylabel('滑点影响 (%)')
-    ax2.set_title('滑点 vs 交易次数（颜色=波动率）\nv7.2应呈负相关（自适应减少交易）')
+    ax2.set_title('滑点 vs 交易次数（颜色=波动率）\nv8.1应呈负相关（自适应减少交易）')
     plt.colorbar(scatter, ax=ax2, label='波动率(%)')
 
     z = np.polyfit(df['num_trades'], df['slippage_impact'] * 100, 1)
@@ -581,8 +581,8 @@ def plot_slippage_analysis_v72(df):
     ax3.set_yticks(range(len(industry_slippage)))
     ax3.set_yticklabels(industry_slippage.index)
     ax3.set_xlabel('平均滑点影响 (%)')
-    ax3.set_title('各申万二级行业平均滑点成本（v7.2目标<0.8%）', fontsize=14, fontweight='bold')
-    ax3.axvline(x=0.8, color='green', linestyle='--', alpha=0.5, label='v7.2目标线')
+    ax3.set_title('各申万二级行业平均滑点成本8.1目标<0.8%）', fontsize=14, fontweight='bold')
+    ax3.axvline(x=0.8, color='green', linestyle='--', alpha=0.5, label='v8.1目标线')
     ax3.axvline(x=1.15, color='red', linestyle='--', alpha=0.5, label='基准线')
     ax3.legend()
     ax3.grid(True, alpha=0.3, axis='x')
@@ -602,12 +602,12 @@ def plot_slippage_analysis_v72(df):
     ax4.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('v7.2_滑点影响分析.png', dpi=300, bbox_inches='tight')
-    print("✓ 图表已保存: v7.2_滑点影响分析.png")
+    plt.savefig('8.1_滑点影响分析.png', dpi=300, bbox_inches='tight')
+    print("✓ 图表已保存: v8.1_滑点影响分析.png")
     plt.show()
 
 def plot_return_distribution_v72(df):
-    """收益率分布分析（v7.2申万行业版）"""
+    """收益率分布分析（v8.1申万行业版）"""
     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun', 'FangSong', 'KaiTi']
     plt.rcParams['axes.unicode_minus'] = False
     fig, axes = plt.subplots(2, 2, figsize=(15, 12))
@@ -644,7 +644,7 @@ def plot_return_distribution_v72(df):
     ax2.axvline(0.6, color='orange', linestyle='--', alpha=0.5, label='基准线')
     ax2.set_xlabel('夏普比率')
     ax2.set_ylabel('频数')
-    ax2.set_title('夏普比率分布（v7.2目标>0.85）')
+    ax2.set_title('夏普比率分布（v8.1目标>0.85）')
     ax2.legend()
     ax2.grid(True, alpha=0.3)
 
@@ -683,12 +683,12 @@ def plot_return_distribution_v72(df):
     ax4.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    plt.savefig('v7.2_收益风险分布分析.png', dpi=300, bbox_inches='tight')
-    print("✓ 图表已保存: v7.2_收益风险分布分析.png")
+    plt.savefig('v8.1_收益风险分布分析.png', dpi=300, bbox_inches='tight')
+    print("✓ 图表已保存: v8.1_收益风险分布分析.png")
     plt.show()
 
 def plot_top_pairs_table_v72(df, top_n=20):
-    """Top N配对表格（v7.2申万行业版）"""
+    """Top N配对表格（v8.1申万行业版）"""
     plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'SimSun', 'FangSong', 'KaiTi']
     plt.rcParams['axes.unicode_minus'] = False
 
@@ -768,8 +768,8 @@ def plot_top_pairs_table_v72(df, top_n=20):
 
     plt.title(f'Top {top_n} 配对排名（v7.2申万行业自适应策略）', 
              fontsize=16, fontweight='bold', pad=20)
-    plt.savefig(f'v7.2_Top{top_n}_配对排名表.png', dpi=300, bbox_inches='tight')
-    print(f"✓ 图表已保存: v7.2_Top{top_n}_配对排名表.png")
+    plt.savefig(f'v8.1_Top{top_n}_配对排名表.png', dpi=300, bbox_inches='tight')
+    print(f"✓ 图表已保存: v8.1_Top{top_n}_配对排名表.png")
     plt.show()
 
 def plot_industry_correlation_heatmap_cluster(df):
@@ -884,8 +884,8 @@ def plot_industry_correlation_heatmap_cluster(df):
     ax2.set_title('申万行业收益相关性热力图 + 群落聚类', fontsize=14, fontweight='bold')
     
     plt.tight_layout()
-    plt.savefig('v7.2_行业相关性聚类分析.png', dpi=300, bbox_inches='tight')
-    print("✓ 图表已保存: v7.2_行业相关性聚类分析.png")
+    plt.savefig('v8.1_行业相关性聚类分析.png', dpi=300, bbox_inches='tight')
+    print("✓ 图表已保存: v8.1_行业相关性聚类分析.png")
     plt.show()
     
     # 输出聚类结果
@@ -900,7 +900,7 @@ def plot_industry_correlation_heatmap_cluster(df):
         print(f"群落 {cluster_id}: {', '.join(industries)}")
 
 def generate_summary_report_v72(df, version):
-    """生成v7.2汇总报告（申万行业版）"""
+    """生成v8.1汇总报告（申万行业版）"""
     print("\n" + "="*80)
     print(f"全行业配对策略回测分析报告 ({version} - 申万行业分类)")
     print("="*80)
@@ -917,7 +917,7 @@ def generate_summary_report_v72(df, version):
     print(f"正收益配对数: {len(df[df['total_return'] > 0])} ({len(df[df['total_return'] > 0])/len(df)*100:.1f}%)")
 
     if 'halflife' in df.columns:
-        print(f"\n【自适应参数统计（v7.2）】")
+        print(f"\n【自适应参数统计（v8.1）】")
         print(f"平均Halflife: {df['halflife'].mean():.1f}天")
         print(f"平均入场阈值: {df['entry_threshold'].mean():.2f} (基础1.2)")
         print(f"平均持仓天数: {df['max_holding_days'].mean():.0f}天 (基础15)")
@@ -986,24 +986,24 @@ if __name__ == "__main__":
     print("\n生成可视化图表...")
 
     # 组合净值走势 - 优先使用实际数据
-    print("\n[v7.2核心] 组合净值走势分析...")
+    print("\n[v8.1核心] 组合净值走势分析...")
     plot_portfolio_nav_curve(df)
 
     # v7.1/v7.2专属分析
-    print("\n[v7.2专属] 自适应参数分析...")
+    print("\n[v8.1专属] 自适应参数分析...")
     plot_adaptive_params_analysis_v72(df)
 
-    print("\n[v7.2专属] 申万行业权重分配...")
+    print("\n[v8.1专属] 申万行业权重分配...")
     plot_industry_weights_v72(df)
 
-    print("\n[v7.2专属] 滑点影响分析...")
+    print("\n[v8.1专属] 滑点影响分析...")
     plot_slippage_analysis_v72(df)
 
     print("\n收益风险分布分析...")
     plot_return_distribution_v72(df)
 
     # 新增：行业相关性热力图+聚类图
-    print("\n[v7.2新增] 行业收益相关性聚类分析...")
+    print("\n[v8.1新增] 行业收益相关性聚类分析...")
     plot_industry_correlation_heatmap_cluster(df)
 
     print("\nTop配对排名表...")
@@ -1011,10 +1011,10 @@ if __name__ == "__main__":
 
     print("\n✓ 全部分析完成！")
     print(f"\n生成图表清单（{version} - 申万行业）：")
-    print("  - v7.2_组合净值走势分析.png 【修复：基于实际数据】")
-    print("  - v7.2_自适应参数分析.png")
-    print("  - v7.2_申万行业权重分配.png")
-    print("  - v7.2_滑点影响分析.png")
-    print("  - v7.2_收益风险分布分析.png")
-    print("  - v7.2_行业相关性聚类分析.png 【新增】")
-    print(f"  - v7.2_Top20_配对排名表.png")
+    print("  - v8.1_组合净值走势分析.png 【修复：基于实际数据】")
+    print("  - v8.1_自适应参数分析.png")
+    print("  - v8.1_申万行业权重分配.png")
+    print("  - v8.1_滑点影响分析.png")
+    print("  - v8.1_收益风险分布分析.png")
+    print("  - v8.1_行业相关性聚类分析.png 【新增】")
+    print(f"  - v8.1_Top20_配对排名表.png")

@@ -276,7 +276,9 @@ def plot_portfolio_nav_curve_v81(df, equity_data=None):
     # 绘制组合净值曲线
     ax1 = axes[0, 0]
     ax1.plot(portfolio_nav.index, portfolio_nav.values, linewidth=2, color='steelblue', label='组合净值')
-    ax1.axhline(y=1, color='black', linestyle='--', alpha=0.5, label='初始净值')
+    # 使用实际初始值
+    initial_value = portfolio_nav.iloc[0] if len(portfolio_nav) > 0 else 1
+    ax1.axhline(y=initial_value, color='black', linestyle='--', alpha=0.5, label=f'初始净值:{initial_value:.2f}')
     
     # 标注关键节点
     final_nav = portfolio_nav.iloc[-1]
